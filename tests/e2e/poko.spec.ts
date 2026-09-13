@@ -21,6 +21,9 @@ declare global {
       getHoleHitCount(): number;
       getStageId(): string;
       getHoles(): { id: string; x: number; y: number; radiusPx: number }[];
+      getFish(): { id: string; state: string; reveal: number; squash: number; holeIndex: number }[];
+      getHittableCount(): number;
+      getUpSec(): number;
       setStage(id: string): Promise<void>;
       getSimulatedSeconds(): number;
       getRenderInfo(): {
@@ -175,6 +178,65 @@ test.describe('骨組み（Phase 1）', () => {
     const after = await settle();
     expect(after.geometries).toBeLessThanOrEqual(before.geometries + 2);
     expect(after.textures).toBeLessThanOrEqual(before.textures + 2);
+  });
+
+  test('叩ける相手が画面から途切れない（不変条件4c）', async ({ page }) => {
+    // ==================================================================
+    // **画面に何も無い時間を作らない。**
+    // 「ばあ！」は押すまで画面が止まっていて、それが受けなかった理由の1つ。
+    //
+    // **待つのは更新時計**（§11-4）。壁時計で待つと、描画が重くなったときに
+    // 足りなくなって「通し実行のときだけ落ちる」テストになる。
+    // ==================================================================
+    await boot(page);
+    // 最初の1匹が出るまで
+    await page.waitForFunction(() => window.__poko.getHittableCount() > 0);
+    const zero = await page.evaluate(async () => {
+      let bad = 0;
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 25) {
+        if (window.__poko.getHittableCount() === 0) bad++;
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return bad;
+    });
+    expect(zero).toBe(0);
+  });
+
+  test('押さなくても魚が出入りする（§4-2）', async ({ page }) => {
+    await boot(page);
+    const seen = await page.evaluate(async () => {
+      const states = new Set<string>();
+      const holes = new Set<number>();
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 30) {
+        for (const f of window.__poko.getFish()) {
+          states.add(f.state);
+          if (f.holeIndex >= 0) holes.add(f.holeIndex);
+        }
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return { states: [...states], holes: holes.size };
+    });
+    // **一度も触っていないのに**状態が動いている
+    expect(seen.states).toContain('rising');
+    expect(seen.states).toContain('up');
+    // いくつもの水たまりが使われる（同じ場所に偏らない）
+    expect(seen.holes).toBeGreaterThanOrEqual(3);
+  });
+
+  test('同時に出るのは2匹まで（§4-2）', async ({ page }) => {
+    await boot(page);
+    const max = await page.evaluate(async () => {
+      let m = 0;
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 25) {
+        m = Math.max(m, window.__poko.getFish().filter((f) => f.state !== 'hidden').length);
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return m;
+    });
+    expect(max).toBe(2);
   });
 
   test('素材が1つも無くても起動して、どこを押しても反応が返る（不変条件7）', async ({ page }) => {

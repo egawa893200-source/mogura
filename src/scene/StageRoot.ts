@@ -11,7 +11,10 @@
 import * as THREE from 'three';
 
 import type { AssetLoader } from '../core/AssetLoader';
+import { findFish } from '../data/fish';
+import { FishSystem } from '../poko/FishSystem';
 import { HoleSystem } from '../poko/HoleSystem';
+import { Spawner } from '../poko/Spawner';
 import { createWaterShape, type WaterShape } from '../poko/WaterShape';
 import type { StageConfig } from '../types';
 import { createBackdropImage, createBackdropTexture, sampleBackdropLight } from './Backdrop';
@@ -19,6 +22,8 @@ import { createBackdropImage, createBackdropTexture, sampleBackdropLight } from 
 export class StageRoot {
   readonly group = new THREE.Group();
   readonly holes: HoleSystem;
+  readonly fish: FishSystem;
+  readonly spawner: Spawner;
   readonly ambient: { sky: THREE.Color; ground: THREE.Color };
 
   private readonly waters: WaterShape[] = [];
@@ -27,12 +32,16 @@ export class StageRoot {
   private constructor(
     readonly config: StageConfig,
     holes: HoleSystem,
+    fish: FishSystem,
+    spawner: Spawner,
     waters: WaterShape[],
     ambient: { sky: THREE.Color; ground: THREE.Color },
     parts: THREE.Object3D[],
     disposables: { dispose(): void }[]
   ) {
     this.holes = holes;
+    this.fish = fish;
+    this.spawner = spawner;
     this.waters = waters;
     this.ambient = ambient;
     this.disposables = disposables;
@@ -91,7 +100,7 @@ export class StageRoot {
       ground: new THREE.Color(config.sky[1]),
     };
 
-    // 水たまり。**4箇所とも同じ形**（作り分けは要らない。§5-2）
+    // 水たまり。**6箇所とも同じ形**（作り分けは要らない。§5-2）
     const waters: WaterShape[] = [];
     for (const runtime of holes.runtimes) {
       const water = createWaterShape(config.water, config.bank);
@@ -99,15 +108,37 @@ export class StageRoot {
       waters.push(water);
     }
 
-    return new StageRoot(config, holes, waters, ambient, parts, disposables);
+    // さかな。**1種につき1匹だけ作る**（同じ魚を同時に2箇所へ出さないので足りる）。
+    // **素材が無くても手続き生成で必ず作れる**（不変条件7）
+    const configs = config.fish.map(findFish).filter((f): f is NonNullable<typeof f> => f !== null);
+    const fish = new FishSystem(configs);
+    // 魚は水たまりの子にする。水面（z = 0）より奥（`FISH_Z`）に置くので、
+    // 沈んでいるあいだは水に隠れる
+    for (const actor of fish.actors) holes.runtimes[0].group.add(actor.group);
+    const spawner = new Spawner(holes.runtimes.length);
+
+    return new StageRoot(config, holes, fish, spawner, waters, ambient, parts, disposables);
   }
 
-  /** `elapsed` は**更新時計**の秒（`Loop.simulatedSeconds`）。壁時計を読まない */
-  update(elapsed: number): void {
+  /**
+   * `elapsed` は**更新時計**の秒（`Loop.simulatedSeconds`）。壁時計を読まない。
+   * `dt` は固定タイムステップ（1/60）。
+   */
+  update(dt: number, elapsed: number): void {
     for (const water of this.waters) water.update(elapsed);
+    this.spawner.update(dt, this.fish);
+    this.fish.update(dt);
+    // 魚は**いま居る水たまりの子**に付け替える。
+    // `holeIndex` が変わったときだけ動かす（毎フレーム付け替えない）
+    for (const actor of this.fish.actors) {
+      if (actor.holeIndex < 0) continue;
+      const want = this.holes.runtimes[actor.holeIndex]?.group;
+      if (want && actor.group.parent !== want) want.add(actor.group);
+    }
   }
 
   dispose(): void {
+    this.fish.dispose();
     for (const water of this.waters) water.dispose();
     for (const item of this.disposables) item.dispose();
   }

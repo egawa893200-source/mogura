@@ -18,8 +18,11 @@ import { describe, expect, it } from 'vitest';
 
 import { FISH, SPARE_FISH, findFish } from '../../src/data/fish';
 import { STAGES, findStage } from '../../src/data/stages';
+import { ASSIST, MAX_UP_FISH, TIMING } from '../../src/data/timing';
+import { FishSystem } from '../../src/poko/FishSystem';
 import { HoleSystem } from '../../src/poko/HoleSystem';
-import { FISH_Z } from '../../src/poko/WaterShape';
+import { Spawner } from '../../src/poko/Spawner';
+import { FISH_Z, LIP_Z, WATER_Z } from '../../src/poko/WaterShape';
 
 describe('ステージと魚のデータ（§5-1 / §5-3）', () => {
   it('ステージは2つ', () => {
@@ -119,12 +122,21 @@ describe('水たまりの配置（§3-2）', () => {
   });
 });
 
-describe('魚は水面より奥から出る（§5-2）', () => {
-  it('FISH_Z が負（手前に出ると隠れなくなる）', () => {
+describe('魚は水面の2枚のあいだから出る（§5-2）', () => {
+  it('奥行きの順番が 池の面 < 魚 < 手前の水面', () => {
+    // ==================================================================
+    // **この3つの大小関係が、隠れる／出るのすべて。**
+    //
+    // 最初は魚を池の面より奥に置いていた。隠れはしたが、**池の上に
+    // 浮かんで出てくる**ように見えた（実装して絵で確認した）。
+    // 「ばあ！」の前板・背板と同じサンドイッチにして直した。
+    //
+    // **`FISH_Z` が `LIP_Z` を超えた時点で隠れなくなる。**
     // 「ばあ！」では切り抜きの板を `FORWARD`（0.26）だけ手前に出していて、
-    // 水面が薄いせいで隠せず、**クマノミが丸ごと画面に出ていた**（実機で発覚）。
-    // ここが 0 以上になった時点で、同じ壊れ方をする
-    expect(FISH_Z).toBeLessThan(0);
+    // 水面が薄いせいで隠せず、クマノミが丸ごと画面に出ていた（実機で発覚）。
+    // ==================================================================
+    expect(WATER_Z).toBeLessThan(FISH_Z);
+    expect(FISH_Z).toBeLessThan(LIP_Z);
   });
 });
 
@@ -256,5 +268,206 @@ describe('当たり判定（§3-3）', () => {
         expect(() => holes.pick(x, y)).not.toThrow();
       }
     }
+  });
+});
+
+describe('さかなの状態遷移（§4-1 / §4-3）', () => {
+  function makeSystem(): FishSystem {
+    return new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+  }
+  /** 固定タイムステップで n 秒ぶん進める。**壁時計を読まない**（§11-4） */
+  function advance(fish: FishSystem, seconds: number): void {
+    const dt = 1 / 60;
+    for (let i = 0; i < Math.round(seconds / dt); i++) fish.update(dt);
+  }
+
+  it('出てくるのは 0.65秒（v0.1 の 0.22秒から遅くした）', () => {
+    expect(TIMING.risingSec).toBeCloseTo(0.65, 5);
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    advance(fish, 0.3);
+    // 途中では出きっていない
+    expect(fish.actors[0].state).toBe('rising');
+    expect(fish.actors[0].reveal).toBeGreaterThan(0);
+    expect(fish.actors[0].reveal).toBeLessThan(1);
+    advance(fish, 0.4);
+    expect(fish.actors[0].state).toBe('up');
+    expect(fish.actors[0].reveal).toBe(1);
+  });
+
+  it('出ている時間は 4.0秒（v0.1 の 2.6秒から伸ばした）', () => {
+    expect(TIMING.upSec).toBeCloseTo(4.0, 5);
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    advance(fish, 0.7 + 3.5);
+    expect(fish.actors[0].state).toBe('up');
+    advance(fish, 0.7);
+    expect(fish.actors[0].state).toBe('retreating');
+  });
+
+  it('叩いた同じ呼び出しで潰れが始まる（§4-3 の0フレーム原則）', () => {
+    // ==================================================================
+    // **このアプリでいちばん重要な規則。**
+    // `update()` を待って 0 のままにしないこと。「ばあ！」は押してから
+    // 0.35秒後に山が来る作りで、そこが受けなかった。
+    // ==================================================================
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    advance(fish, 0.7);
+    expect(fish.actors[0].state).toBe('up');
+    const ok = fish.hit(0);
+    expect(ok).toBe(true);
+    // **update を1度も呼ばずに**見る
+    expect(fish.actors[0].state).toBe('hit');
+    expect(fish.actors[0].squash).toBeGreaterThan(0);
+  });
+
+  it('出てくる途中でも叩ける（不変条件2）', () => {
+    // 「みずのなか」の貝は開閉中のタップで向きを反転していたため、
+    // 連打すると開き量の最大が 0.037 にしかならなかった
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    advance(fish, 0.2);
+    expect(fish.actors[0].state).toBe('rising');
+    expect(fish.hit(0)).toBe(true);
+    expect(fish.actors[0].squash).toBeGreaterThan(0);
+  });
+
+  it('潰れている最中に叩いても反応は返るが、得点は増えない（§4-6）', () => {
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    advance(fish, 0.7);
+    expect(fish.hit(0)).toBe(true);
+    // 2回目以降は false（得点が増えない）。**例外は投げない**
+    expect(fish.hit(0)).toBe(false);
+    expect(() => fish.hit(0)).not.toThrow();
+  });
+
+  it('60Hz で連打しても、沈みきるまで完走する', () => {
+    // **「連打しても壊れない」は「連打しても動く」まで確かめる**（§14-1）
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    advance(fish, 0.7);
+    fish.hit(0);
+    let maxSquash = 0;
+    for (let i = 0; i < 60; i++) {
+      fish.hit(0); // 連打
+      fish.update(1 / 60);
+      maxSquash = Math.max(maxSquash, fish.actors[0].squash);
+    }
+    // 潰れが最後まで進んでいる（0.037 のような値で止まらない）
+    expect(maxSquash).toBeGreaterThan(0.9);
+    expect(fish.actors[0].state).toBe('hidden');
+  });
+
+  it('同じ魚が同時に2箇所に出ない（1種につき1匹しか持たない）', () => {
+    const fish = makeSystem();
+    expect(fish.spawn(0, 0, 1)).toBe(true);
+    // 同じ魚をもう1箇所には出せない
+    expect(fish.spawn(0, 3, 1)).toBe(false);
+  });
+});
+
+describe('出現の抽選（§4-2 / §4-7）', () => {
+  function makeBoth(seed = 1234): { fish: FishSystem; spawner: Spawner } {
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    return { fish, spawner: new Spawner(STAGES[0].holes.length, seed) };
+  }
+
+  it('叩ける相手が 0 になる時間が無い（不変条件4c）', () => {
+    // ==================================================================
+    // **画面に何も無い時間を作らない。**
+    // 「ばあ！」は押すまで画面が止まっていた。ここが 0 になると、
+    // 子どもが「叩くものが無い」画面を見ることになる。
+    // ==================================================================
+    const { fish, spawner } = makeBoth();
+    const dt = 1 / 60;
+    let zeroFrames = 0;
+    // 最初の1フレームで出はじめる
+    spawner.update(dt, fish);
+    fish.update(dt);
+    for (let i = 0; i < 60 * 60; i++) {
+      spawner.update(dt, fish);
+      fish.update(dt);
+      if (fish.countHittable() === 0) zeroFrames++;
+    }
+    expect(zeroFrames).toBe(0);
+  });
+
+  it('同時に出るのは 2匹まで（2026-09-13 に人間が決めた）', () => {
+    const { fish, spawner } = makeBoth();
+    const dt = 1 / 60;
+    let max = 0;
+    for (let i = 0; i < 60 * 60; i++) {
+      spawner.update(dt, fish);
+      fish.update(dt);
+      max = Math.max(max, fish.countActive());
+    }
+    expect(max).toBeLessThanOrEqual(MAX_UP_FISH);
+    // 2匹出る回がちゃんとある（1匹ずつしか出ないと「ばあ！」に戻る）
+    expect(max).toBe(2);
+  });
+
+  it('同じ水たまりから続けて出さない', () => {
+    const { fish, spawner } = makeBoth();
+    const dt = 1 / 60;
+    const order: number[] = [];
+    const seen = new Set<number>();
+    for (let i = 0; i < 60 * 120; i++) {
+      spawner.update(dt, fish);
+      fish.update(dt);
+      for (const actor of fish.actors) {
+        if (actor.state === 'rising' && actor.reveal < 0.05 && !seen.has(actor.holeIndex * 1e6 + i)) {
+          if (actor.elapsed <= dt * 1.5) order.push(actor.holeIndex);
+        }
+      }
+    }
+    expect(order.length).toBeGreaterThan(10);
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i], `${i} 回目`).not.toBe(order[i - 1]);
+    }
+  });
+
+  it('6箇所すべてが使われる（偏らない）', () => {
+    const { fish, spawner } = makeBoth();
+    const dt = 1 / 60;
+    const used = new Set<number>();
+    for (let i = 0; i < 60 * 180; i++) {
+      spawner.update(dt, fish);
+      fish.update(dt);
+      for (const actor of fish.actors) if (actor.holeIndex >= 0) used.add(actor.holeIndex);
+    }
+    expect(used.size).toBe(6);
+  });
+
+  it('介助は 3.2〜5.2秒の外に出ない（§4-7）', () => {
+    const { fish, spawner } = makeBoth();
+    // 外し続けても上限で止まる
+    for (let i = 0; i < 50; i++) {
+      spawner.reportHit(false);
+      spawner.applyAssist(fish);
+    }
+    expect(fish.getUpSec()).toBeLessThanOrEqual(ASSIST.maxUpSec);
+    // 当て続けても下限で止まる
+    for (let i = 0; i < 50; i++) {
+      spawner.reportHit(true);
+      spawner.applyAssist(fish);
+    }
+    expect(fish.getUpSec()).toBeGreaterThanOrEqual(ASSIST.minUpSec);
+  });
+
+  it('同じ種からは必ず同じ列が出る（乱数は独立したシードから引く）', () => {
+    // three は generateUUID() で 1オブジェクトにつき Math.random() を4回
+    // 消費するので、共有の乱数を使うとオブジェクトを1つ足しただけで抽選が変わる
+    const a = makeBoth(999);
+    const b = makeBoth(999);
+    const dt = 1 / 60;
+    for (let i = 0; i < 600; i++) {
+      a.spawner.update(dt, a.fish);
+      a.fish.update(dt);
+      b.spawner.update(dt, b.fish);
+      b.fish.update(dt);
+    }
+    expect(a.fish.actors.map((x) => x.holeIndex)).toEqual(b.fish.actors.map((x) => x.holeIndex));
   });
 });

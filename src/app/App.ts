@@ -86,13 +86,13 @@ export class App {
 
     this.input.onTap((tap) => this.onTap(tap.screenX, tap.screenY));
 
-    this.loop.onUpdate(() => {
+    this.loop.onUpdate((ctx) => {
       this.quality.sample(this.loop.rawDelta);
       this.renderer.setResolutionScale(this.quality.settings.resolutionScale);
       // **画面座標は毎フレーム測り直す。** 画面の向きが変わると全部ずれる
       this.stageRoot?.holes.measure(this.projector);
       // **更新時計を渡す。壁時計を読まない**（§11-4）
-      this.stageRoot?.update(this.loop.simulatedSeconds);
+      this.stageRoot?.update(ctx.dt, this.loop.simulatedSeconds);
     });
     this.loop.onRender(() => this.renderer.render(this.scene));
   }
@@ -156,6 +156,17 @@ export class App {
       getHoleHitCount: () => this.holeHitCount,
       getStageId: () => this.stageId,
       getHoles: () => this.stageRoot?.holes.describe() ?? [],
+      /** 魚の様子。**E2E が「叩ける相手が 0 にならない」を見る**（不変条件4c） */
+      getFish: () =>
+        this.stageRoot?.fish.actors.map((a) => ({
+          id: a.config.id,
+          state: a.state,
+          reveal: +a.reveal.toFixed(3),
+          squash: +a.squash.toFixed(3),
+          holeIndex: a.holeIndex,
+        })) ?? [],
+      getHittableCount: () => this.stageRoot?.fish.countHittable() ?? 0,
+      getUpSec: () => this.stageRoot?.fish.getUpSec() ?? 0,
       setStage: (id: string) => this.loadStage(id),
       /** **壁時計を読まないこと**（§11-4）。待つのはこの時計 */
       getSimulatedSeconds: () => this.loop.simulatedSeconds,
