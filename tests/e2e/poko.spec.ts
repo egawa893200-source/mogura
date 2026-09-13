@@ -24,6 +24,9 @@ declare global {
       getFish(): { id: string; state: string; reveal: number; squash: number; holeIndex: number }[];
       getHittableCount(): number;
       getUpSec(): number;
+      getFishHitCount(): number;
+      getMissCount(): number;
+      getVoiceLog(): { clip: string; at: number }[];
       setStage(id: string): Promise<void>;
       getSimulatedSeconds(): number;
       getRenderInfo(): {
@@ -237,6 +240,152 @@ test.describe('骨組み（Phase 1）', () => {
       return m;
     });
     expect(max).toBe(2);
+  });
+
+  test('魚を叩くと、その場で潰れる（§4-3 の0フレーム原則）', async ({ page }) => {
+    // ==================================================================
+    // **このアプリでいちばん重要な規則。**
+    // タップを受け取った**その場**で潰れが始まる。
+    // 「ばあ！」は押してから 0.35秒後に山が来る作りで、そこが受けなかった。
+    // ==================================================================
+    await boot(page);
+    const hole = await page.evaluate(async () => {
+      // 魚が出るまで待って、その水たまりの位置を返す
+      while (true) {
+        const up = window.__poko.getFish().find((f) => f.state === 'up');
+        if (up) {
+          const holes = window.__poko.getHoles();
+          return { ...holes[up.holeIndex], fish: up.id };
+        }
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    });
+    const before = await page.evaluate(() => window.__poko.getFishHitCount());
+    await page.mouse.click(hole.x, hole.y);
+    // **クリックの直後に見る。** 次のフレームを待たない
+    const after = await page.evaluate(() => ({
+      hits: window.__poko.getFishHitCount(),
+      squash: Math.max(...window.__poko.getFish().map((f) => f.squash)),
+    }));
+    expect(after.hits).toBe(before + 1);
+    expect(after.squash).toBeGreaterThan(0);
+  });
+
+  test('魚の居ない水たまりを叩いても反応は返る（不変条件3b）', async ({ page }) => {
+    await boot(page);
+    const empty = await page.evaluate(async () => {
+      while (true) {
+        const used = new Set(
+          window.__poko.getFish().filter((f) => f.state !== 'hidden').map((f) => f.holeIndex)
+        );
+        const holes = window.__poko.getHoles();
+        const free = holes.findIndex((_, i) => !used.has(i));
+        if (free >= 0) return holes[free];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    });
+    const before = await page.evaluate(() => ({
+      taps: window.__poko.getTapCount(),
+      miss: window.__poko.getMissCount(),
+      hits: window.__poko.getFishHitCount(),
+    }));
+    await page.mouse.click(empty.x, empty.y);
+    const after = await page.evaluate(() => ({
+      taps: window.__poko.getTapCount(),
+      miss: window.__poko.getMissCount(),
+      hits: window.__poko.getFishHitCount(),
+    }));
+    // **反応は返る**が、**得点は増えない**（§4-5）
+    expect(after.taps).toBe(before.taps + 1);
+    expect(after.miss).toBe(before.miss + 1);
+    expect(after.hits).toBe(before.hits);
+  });
+
+  test('声は2本だけで、役割を混ぜていない（§4-4）', async ({ page }) => {
+    // ==================================================================
+    // 「ばあっ！」＝魚が出た合図、「いてっ」＝当たった合図。
+    // **隠れたままなのに「ばあっ」と言わない**（「ばあ！」でいちばん
+    // 紛らわしかった間違い）。**空振りでは声を出さない**（§4-5）。
+    // ==================================================================
+    await boot(page);
+    // しばらく放っておく（触らない）
+    await page.evaluate(async () => {
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 8) {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    });
+    const idle = await page.evaluate(() => window.__poko.getVoiceLog());
+    // 触っていないので「ばあっ」だけ。「いてっ」は1回も無い
+    expect(idle.length).toBeGreaterThan(0);
+    expect(idle.every((v) => v.clip === 'baa')).toBe(true);
+
+    // 空振りしても声は増えない
+    const empty = await page.evaluate(async () => {
+      while (true) {
+        const used = new Set(
+          window.__poko.getFish().filter((f) => f.state !== 'hidden').map((f) => f.holeIndex)
+        );
+        const holes = window.__poko.getHoles();
+        const free = holes.findIndex((_, i) => !used.has(i));
+        if (free >= 0) return holes[free];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    });
+    const beforeMiss = await page.evaluate(() => window.__poko.getVoiceLog().length);
+    await page.mouse.click(empty.x, empty.y);
+    const afterMiss = await page.evaluate(
+      () => window.__poko.getVoiceLog().filter((v) => v.clip === 'ite').length
+    );
+    expect(afterMiss).toBe(0);
+    expect(await page.evaluate(() => window.__poko.getVoiceLog().length)).toBe(beforeMiss);
+
+    // 魚を叩くと「いてっ」が1回だけ増える
+    const hole = await page.evaluate(async () => {
+      while (true) {
+        const up = window.__poko.getFish().find((f) => f.state === 'up');
+        if (up) return window.__poko.getHoles()[up.holeIndex];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    });
+    await page.mouse.click(hole.x, hole.y);
+    const ite = await page.evaluate(
+      () => window.__poko.getVoiceLog().filter((v) => v.clip === 'ite').length
+    );
+    expect(ite).toBe(1);
+  });
+
+  test('同時に出た2匹の「ばあっ」が重ならない（§4-4）', async ({ page }) => {
+    // `voiceBusyUntil` に任せると2匹目が無音になるので 0.12秒ずらす
+    await boot(page);
+    const log = await page.evaluate(async () => {
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 20) {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return window.__poko.getVoiceLog();
+    });
+    expect(log.length).toBeGreaterThan(2);
+    for (let i = 1; i < log.length; i++) {
+      // 同じ更新時刻に2本重ならない
+      expect(log[i].at - log[i - 1].at, `${i} 本目`).toBeGreaterThan(0.05);
+    }
+  });
+
+  test('連打しても1回ごとに反応が返る（不変条件2）', async ({ page }) => {
+    await boot(page);
+    const hole = await page.evaluate(async () => {
+      while (true) {
+        const up = window.__poko.getFish().find((f) => f.state === 'up');
+        if (up) return window.__poko.getHoles()[up.holeIndex];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    });
+    const before = await page.evaluate(() => window.__poko.getTapCount());
+    for (let i = 0; i < 10; i++) await page.mouse.click(hole.x, hole.y);
+    const after = await page.evaluate(() => window.__poko.getTapCount());
+    // **10回とも受け取る。** 得点は1回ぶんしか増えない（§4-6）が、反応は返る
+    expect(after).toBe(before + 10);
   });
 
   test('素材が1つも無くても起動して、どこを押しても反応が返る（不変条件7）', async ({ page }) => {

@@ -13,8 +13,9 @@ import * as THREE from 'three';
 import type { AssetLoader } from '../core/AssetLoader';
 import { findFish } from '../data/fish';
 import { FishSystem } from '../poko/FishSystem';
+import { HitEffect } from '../poko/HitEffect';
 import { HoleSystem } from '../poko/HoleSystem';
-import { Spawner } from '../poko/Spawner';
+import { Spawner, seededRandom } from '../poko/Spawner';
 import { createWaterShape, type WaterShape } from '../poko/WaterShape';
 import type { StageConfig } from '../types';
 import { createBackdropImage, createBackdropTexture, sampleBackdropLight } from './Backdrop';
@@ -24,6 +25,9 @@ export class StageRoot {
   readonly holes: HoleSystem;
   readonly fish: FishSystem;
   readonly spawner: Spawner;
+  readonly effect: HitEffect;
+  /** しぶきの散りかた。**遊びの乱数は独立したシードから引く**（§4-2） */
+  readonly rng = seededRandom(0x5bf03635);
   readonly ambient: { sky: THREE.Color; ground: THREE.Color };
 
   private readonly waters: WaterShape[] = [];
@@ -34,6 +38,7 @@ export class StageRoot {
     holes: HoleSystem,
     fish: FishSystem,
     spawner: Spawner,
+    effect: HitEffect,
     waters: WaterShape[],
     ambient: { sky: THREE.Color; ground: THREE.Color },
     parts: THREE.Object3D[],
@@ -42,11 +47,16 @@ export class StageRoot {
     this.holes = holes;
     this.fish = fish;
     this.spawner = spawner;
+    this.effect = effect;
     this.waters = waters;
     this.ambient = ambient;
     this.disposables = disposables;
     for (const part of parts) this.group.add(part);
     this.group.add(holes.group);
+    // しぶきは**水たまりより手前**。奥だと水面に隠れて1粒も見えない
+    // （「ばあ！」で足あとを置いて見えなかったのと同じ失敗）
+    this.effect.group.position.z = 0.3;
+    this.group.add(this.effect.group);
   }
 
   /**
@@ -116,8 +126,10 @@ export class StageRoot {
     // 沈んでいるあいだは水に隠れる
     for (const actor of fish.actors) holes.runtimes[0].group.add(actor.group);
     const spawner = new Spawner(holes.runtimes.length);
+    // しぶきは水の色。**白い粒にしない**（うみ では背景に溶ける）
+    const effect = new HitEffect(config.water[0]);
 
-    return new StageRoot(config, holes, fish, spawner, waters, ambient, parts, disposables);
+    return new StageRoot(config, holes, fish, spawner, effect, waters, ambient, parts, disposables);
   }
 
   /**
@@ -128,6 +140,10 @@ export class StageRoot {
     for (const water of this.waters) water.update(elapsed);
     this.spawner.update(dt, this.fish);
     this.fish.update(dt);
+    this.effect.update(
+      dt,
+      this.holes.runtimes.map((r) => r.group)
+    );
     // 魚は**いま居る水たまりの子**に付け替える。
     // `holeIndex` が変わったときだけ動かす（毎フレーム付け替えない）
     for (const actor of this.fish.actors) {
@@ -138,6 +154,7 @@ export class StageRoot {
   }
 
   dispose(): void {
+    this.effect.dispose();
     this.fish.dispose();
     for (const water of this.waters) water.dispose();
     for (const item of this.disposables) item.dispose();

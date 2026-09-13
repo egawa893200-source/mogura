@@ -25,6 +25,9 @@ import { ParentalGate } from '../ui/ParentalGate';
 import { Ripple } from '../ui/Ripple';
 import type { StageId } from '../types';
 
+/** 叩いた場所。**毎フレーム new をしない**（§10-3） */
+const _hitAt = new THREE.Vector3();
+
 export interface AppElements {
   webglLayer: HTMLElement;
   overlayLayer: HTMLElement;
@@ -52,6 +55,16 @@ export class App {
   /** 開発と E2E 用。押した回数と、水たまりに当たった回数 */
   private tapCount = 0;
   private holeHitCount = 0;
+  /** 魚を叩いた回数（得点が増える叩き） */
+  private fishHitCount = 0;
+  /** 空振りの回数（魚の居ない水たまり） */
+  private missCount = 0;
+  /** 声を鳴らした記録。E2E が「役割を混ぜていない」ことを見る */
+  private readonly voiceLog: { clip: string; at: number }[] = [];
+  /** 「ばあっ！」をまだ鳴らしていない魚。0.12秒ずらして鳴らす（§4-4） */
+  private readonly pendingBaa: { actor: number; at: number }[] = [];
+  /** どの魚が `rising` に入ったかを覚えておく（入った瞬間だけ鳴らす） */
+  private readonly wasRising: boolean[] = [];
 
   constructor(elements: AppElements) {
     this.renderer = new Renderer(elements.webglLayer);
@@ -93,6 +106,7 @@ export class App {
       this.stageRoot?.holes.measure(this.projector);
       // **更新時計を渡す。壁時計を読まない**（§11-4）
       this.stageRoot?.update(ctx.dt, this.loop.simulatedSeconds);
+      this.speakOnRise();
     });
     this.loop.onRender(() => this.renderer.render(this.scene));
   }
@@ -131,21 +145,87 @@ export class App {
   /**
    * タップ。**必ず何かを返す**（不変条件1）。
    *
-   * Phase 1 ではまだ魚が居ないので、水たまりに当たっても当たらなくても
-   * 波紋と音だけ。**当たったかどうかは数えておく**（E2E が見る）。
+   * ========================================================================
+   * **0フレーム原則**（§4-3）。ここは `Input` のハンドラの中なので、
+   * `FishSystem.hit()` を呼んだ時点で潰れが始まり、音も声も**その場**で鳴る。
+   * **次の更新を待たない。** 「ばあ！」は押してから 0.35秒後に山が来る
+   * 作りで、そこが受けなかった。
+   * ========================================================================
    */
   private onTap(screenX: number, screenY: number): void {
     this.tapCount++;
     // **音は初期ミュート。最初のタップで解禁する**（不変条件9）
     void this.audio.unlock();
     this.ripple.spawn(screenX, screenY);
-    const hole = this.stageRoot?.holes.pick(screenX, screenY) ?? null;
-    if (hole) {
-      this.holeHitCount++;
-      // 水たまりに当たった。Phase 3 で魚の判定が入る
-      this.audio.playOneShot('bubble');
-    } else {
+
+    const root = this.stageRoot;
+    const hole = root?.holes.pick(screenX, screenY) ?? null;
+    if (!root || !hole) {
+      // 水たまりでも何でもないところ。**波紋と音だけ**（不変条件1）
       this.audio.playOneShot('plop');
+      return;
+    }
+
+    this.holeHitCount++;
+    const holeIndex = root.holes.runtimes.indexOf(hole);
+    const actorIndex = root.fish.actors.findIndex(
+      (a) => a.holeIndex === holeIndex && a.state !== 'hidden'
+    );
+    const scored = actorIndex >= 0 ? root.fish.hit(actorIndex) : false;
+
+    // しぶきと揺れは**当たっても外しても**返す（不変条件1・3b）
+    _hitAt.set(hole.worldPosition.x, hole.worldPosition.y + 0.2, 0);
+    root.effect.splash(_hitAt, scored, root.rng);
+    root.effect.shake(holeIndex);
+
+    if (scored) {
+      this.fishHitCount++;
+      this.audio.playOneShot('plop');
+      // **「いてっ」は当たった合図。** `speak()` を通さない（§4-4）
+      this.audio.playVoice('ite');
+      this.voiceLog.push({ clip: 'ite', at: this.loop.simulatedSeconds });
+      this.stageRoot?.spawner.reportHit(true);
+    } else {
+      this.missCount++;
+      // 低い音だけ。**声を出さない**（§4-5。外れを失敗にしないし、
+      // 声は「出た」「当たった」の2つの意味に取っておく）
+      this.audio.playOneShot('bubble');
+      this.stageRoot?.spawner.reportHit(false);
+    }
+    this.stageRoot?.spawner.applyAssist(root.fish);
+  }
+
+  /**
+   * 魚が水面から見えはじめたフレームで「ばあっ！」と言う（§4-4）。
+   *
+   * ========================================================================
+   * **`rising` に入った瞬間だけ鳴らす。** `hidden` では鳴らさない ——
+   * 「ばあ！」で**隠れたままなのに「ばあっ」と言う**のが、
+   * いちばん紛らわしい間違いだった。
+   *
+   * **同時に出た2匹を同じフレームで鳴らさない。** `voiceBusyUntil` に
+   * 任せると2匹目が無音になるので、0.12秒ずらす（間があると「2匹出た」と分かる）。
+   * ========================================================================
+   */
+  private speakOnRise(): void {
+    const root = this.stageRoot;
+    if (!root) return;
+    const now = this.loop.simulatedSeconds;
+
+    for (let i = 0; i < root.fish.actors.length; i++) {
+      const rising = root.fish.actors[i].state === 'rising';
+      if (rising && !this.wasRising[i]) {
+        // すでに待っている声があれば、そのぶん後ろへずらす
+        const delay = this.pendingBaa.length * 0.12;
+        this.pendingBaa.push({ actor: i, at: now + delay });
+      }
+      this.wasRising[i] = rising;
+    }
+
+    while (this.pendingBaa.length > 0 && this.pendingBaa[0].at <= now) {
+      this.pendingBaa.shift();
+      this.audio.playVoice('baa');
+      this.voiceLog.push({ clip: 'baa', at: now });
     }
   }
 
@@ -167,6 +247,10 @@ export class App {
         })) ?? [],
       getHittableCount: () => this.stageRoot?.fish.countHittable() ?? 0,
       getUpSec: () => this.stageRoot?.fish.getUpSec() ?? 0,
+      getFishHitCount: () => this.fishHitCount,
+      getMissCount: () => this.missCount,
+      /** 声の記録。**役割を混ぜていない**ことを E2E が見る（§4-4） */
+      getVoiceLog: () => this.voiceLog.slice(),
       setStage: (id: string) => this.loadStage(id),
       /** **壁時計を読まないこと**（§11-4）。待つのはこの時計 */
       getSimulatedSeconds: () => this.loop.simulatedSeconds,
