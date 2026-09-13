@@ -31,6 +31,13 @@ import type { StageConfig } from '../types';
  *
  * **2列×3行にする。** 3列×2行だと横の間隔が 1.38 しか取れず、
  * 当たり判定が半分になる（縦のほうが場所に余裕があるため）。
+ *
+ * **列を左に寄せてある**（2026-09-13）。魚は穴の**右**へ泳ぎ出るので、
+ * 穴の右に体のぶん（約 1.1）の余白が要る。右の列を +1.42 に置いたままだと
+ * 魚が画面の外（x > 2.30）へ出てしまう。
+ * 左の列 −1.82・右の列 +0.43 にして、魚は −1.34 と +0.91 に出る。
+ * **左の列をこれ以上左へ出さない** —— 穴の外周は 0.366 あるので、
+ * −1.9 に置くと画面の端（±2.30）まで 3px しか残らず、縁が切れて見えた。
  * **行間は「画面上で」等間隔にする。** ワールドの y で等間隔にすると、
  * カメラが原点を見下ろしている（2.4°）ぶん**下の行ほど画面上で詰まる**。
  * 実測でそれをやったら 360×600 で 68.5px に落ちた
@@ -75,12 +82,12 @@ import type { StageConfig } from '../types';
  * ==========================================================================
  */
 const HOLES = [
-  { id: 'r1-l', position: [-1.42, 0.25] as const, hitRadiusPx: 120 },
-  { id: 'r1-r', position: [1.42, 0.25] as const, hitRadiusPx: 120 },
-  { id: 'r2-l', position: [-1.42, -1.78] as const, hitRadiusPx: 120 },
-  { id: 'r2-r', position: [1.42, -1.78] as const, hitRadiusPx: 120 },
-  { id: 'r3-l', position: [-1.42, -3.86] as const, hitRadiusPx: 120 },
-  { id: 'r3-r', position: [1.42, -3.86] as const, hitRadiusPx: 120 },
+  { id: 'r1-l', position: [-1.82, 0.4] as const, hitRadiusPx: 120 },
+  { id: 'r1-r', position: [0.43, 0.4] as const, hitRadiusPx: 120 },
+  { id: 'r2-l', position: [-1.82, -1.68] as const, hitRadiusPx: 120 },
+  { id: 'r2-r', position: [0.43, -1.68] as const, hitRadiusPx: 120 },
+  { id: 'r3-l', position: [-1.82, -3.76] as const, hitRadiusPx: 120 },
+  { id: 'r3-r', position: [0.43, -3.76] as const, hitRadiusPx: 120 },
 ];
 
 export const STAGES: readonly StageConfig[] = [

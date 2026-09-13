@@ -63,8 +63,10 @@ export class App {
   private readonly voiceLog: { clip: string; at: number }[] = [];
   /** 「ばあっ！」をまだ鳴らしていない魚。0.12秒ずらして鳴らす（§4-4） */
   private readonly pendingBaa: { actor: number; at: number }[] = [];
-  /** どの魚が `rising` に入ったかを覚えておく（入った瞬間だけ鳴らす） */
-  private readonly wasRising: boolean[] = [];
+  /** 前に声を鳴らした更新時刻。**声どうしを 0.12秒 空ける**ために見る */
+  private lastVoiceAt = -1;
+  /** どの魚が `calling` に入ったかを覚えておく（入った瞬間だけ鳴らす） */
+  private readonly wasCalling: boolean[] = [];
 
   constructor(elements: AppElements) {
     this.renderer = new Renderer(elements.webglLayer);
@@ -103,7 +105,8 @@ export class App {
       this.quality.sample(this.loop.rawDelta);
       this.renderer.setResolutionScale(this.quality.settings.resolutionScale);
       // **画面座標は毎フレーム測り直す。** 画面の向きが変わると全部ずれる
-      this.stageRoot?.holes.measure(this.projector);
+      // **当たり判定の中心を、いま魚が居るところに合わせる**
+      this.stageRoot?.holes.measure(this.projector, this.stageRoot.fishOffsets());
       // **更新時計を渡す。壁時計を読まない**（§11-4）
       this.stageRoot?.update(ctx.dt, this.loop.simulatedSeconds);
       this.speakOnRise();
@@ -136,7 +139,7 @@ export class App {
       this.stageRoot = next;
       this.stageId = config.id;
       this.scene.add(next.group);
-      next.holes.measure(this.projector);
+      next.holes.measure(this.projector, next.fishOffsets());
     } finally {
       this.building = false;
     }
@@ -168,15 +171,26 @@ export class App {
 
     this.holeHitCount++;
     const holeIndex = root.holes.runtimes.indexOf(hole);
+    // **`calling` の魚は叩けない**（まだ1画素も見えていない）
     const actorIndex = root.fish.actors.findIndex(
-      (a) => a.holeIndex === holeIndex && a.state !== 'hidden'
+      (a) => a.holeIndex === holeIndex && a.state !== 'hidden' && a.state !== 'calling'
     );
     const scored = actorIndex >= 0 ? root.fish.hit(actorIndex) : false;
 
-    // しぶきと揺れは**当たっても外しても**返す（不変条件1・3b）
-    _hitAt.set(hole.worldPosition.x, hole.worldPosition.y + 0.2, 0);
+    // しぶき・揺れ・ハンマーは**当たっても外しても**返す（不変条件1・3b）。
+    // 叩いた場所は**魚が居るところ**（穴の中心ではない）。
+    // 魚は穴の右へ泳ぎ出るので、ずれを足さないと的の外で演出が出る
+    const actor = actorIndex >= 0 ? root.fish.actors[actorIndex] : null;
+    _hitAt.set(
+      hole.worldPosition.x + (actor ? actor.group.position.x : 0),
+      hole.worldPosition.y,
+      0
+    );
     root.effect.splash(_hitAt, scored, root.rng);
     root.effect.shake(holeIndex);
+    // **ピコピコハンマー**（2026-09-13、人間が決めた）。
+    // 叩いたことが絵で分かるので、1歳半にも「自分がやった」が読める
+    root.effect.hammer(_hitAt);
 
     if (scored) {
       this.fishHitCount++;
@@ -196,10 +210,17 @@ export class App {
   }
 
   /**
-   * 魚が水面から見えはじめたフレームで「ばあっ！」と言う（§4-4）。
+   * 魚が出てくる**前**に「ばあっ！」と言う（§4-4）。
    *
    * ========================================================================
-   * **`rising` に入った瞬間だけ鳴らす。** `hidden` では鳴らさない ——
+   * **`calling` に入った瞬間に鳴らす。** 姿はまだ1画素も見えていない。
+   *
+   * 実機で「**『ばあっ』する前にチラッと見えている**」と言われた
+   * （2026-09-13）。声と同時に動きはじめていたので、声が耳に届く前に
+   * 姿が見えていた。「何も見えない状態で『ばあっ』と言って出てくる」が
+   * 人間の指定なので、`calling`（0.38秒・姿を出さない）を挟んだ。
+   *
+   * `hidden` では鳴らさない ——
    * 「ばあ！」で**隠れたままなのに「ばあっ」と言う**のが、
    * いちばん紛らわしい間違いだった。
    *
@@ -213,17 +234,28 @@ export class App {
     const now = this.loop.simulatedSeconds;
 
     for (let i = 0; i < root.fish.actors.length; i++) {
-      const rising = root.fish.actors[i].state === 'rising';
-      if (rising && !this.wasRising[i]) {
+      const calling = root.fish.actors[i].state === 'calling';
+      if (calling && !this.wasCalling[i]) {
         // すでに待っている声があれば、そのぶん後ろへずらす
         const delay = this.pendingBaa.length * 0.12;
         this.pendingBaa.push({ actor: i, at: now + delay });
       }
-      this.wasRising[i] = rising;
+      this.wasCalling[i] = calling;
     }
 
+    // ==================================================================
+    // **前の声から 0.12秒は空ける。**
+    //
+    // 並べるときに `pendingBaa.length` でずらすだけでは足りなかった
+    // （2026-09-13 の実測）。2匹が**続けて**（別のフレームで）出ると、
+    // 1匹目を鳴らして列が空になり、2匹目が待ち 0 で入るので
+    // **1フレーム差（0.017秒）で重なった**。
+    // 並べ方ではなく「前の声からの間隔」で見る。
+    // ==================================================================
     while (this.pendingBaa.length > 0 && this.pendingBaa[0].at <= now) {
+      if (now - this.lastVoiceAt < 0.12) break;
       this.pendingBaa.shift();
+      this.lastVoiceAt = now;
       this.audio.playVoice('baa');
       this.voiceLog.push({ clip: 'baa', at: now });
     }
@@ -243,6 +275,7 @@ export class App {
           state: a.state,
           reveal: +a.reveal.toFixed(3),
           squash: +a.squash.toFixed(3),
+          bump: +a.bump.toFixed(3),
           holeIndex: a.holeIndex,
         })) ?? [],
       getHittableCount: () => this.stageRoot?.fish.countHittable() ?? 0,

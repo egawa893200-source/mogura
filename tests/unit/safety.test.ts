@@ -22,7 +22,7 @@ import { ASSIST, MAX_UP_FISH, TIMING } from '../../src/data/timing';
 import { FishSystem } from '../../src/poko/FishSystem';
 import { HoleSystem } from '../../src/poko/HoleSystem';
 import { Spawner } from '../../src/poko/Spawner';
-import { FISH_Z, LIP_Z, WATER_Z } from '../../src/poko/WaterShape';
+import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
 
 describe('ステージと魚のデータ（§5-1 / §5-3）', () => {
   it('ステージは2つ', () => {
@@ -122,8 +122,8 @@ describe('水たまりの配置（§3-2）', () => {
   });
 });
 
-describe('魚は水面の2枚のあいだから出る（§5-2）', () => {
-  it('奥行きの順番が 池の面 < 魚 < 手前の水面', () => {
+describe('魚は穴の口から出る（§5-2）', () => {
+  it('奥行きの順番が 穴の中 < 魚 < 縁', () => {
     // ==================================================================
     // **この3つの大小関係が、隠れる／出るのすべて。**
     //
@@ -135,8 +135,15 @@ describe('魚は水面の2枚のあいだから出る（§5-2）', () => {
     // 「ばあ！」では切り抜きの板を `FORWARD`（0.26）だけ手前に出していて、
     // 水面が薄いせいで隠せず、クマノミが丸ごと画面に出ていた（実機で発覚）。
     // ==================================================================
-    expect(WATER_Z).toBeLessThan(FISH_Z);
-    expect(FISH_Z).toBeLessThan(LIP_Z);
+    expect(HOLE_Z).toBeLessThan(FISH_Z);
+    expect(FISH_Z).toBeLessThan(RIM_Z);
+  });
+
+  it('出てくる向きが左から右（口より右へ出る）', () => {
+    // **横向きの動きにする**（2026-09-13、実機を見て人間が決めた）。
+    // 上下に浮き上がる形は、見下ろし 11.8° の浅い角度では
+    // 「水から出てきた」に見えなかった
+    expect(OUT_X).toBeGreaterThan(MOUTH_X);
   });
 });
 
@@ -260,6 +267,45 @@ describe('当たり判定（§3-3）', () => {
     expect(measured['横持ち']).toBeLessThan(50);
   });
 
+  it('魚が出きっているときの当たり半径（いちばん狭くなる瞬間）', () => {
+    // ==================================================================
+    // **魚は穴の右へ泳ぎ出るので、右隣の穴に近づく**（2026-09-13）。
+    // いちばん狭くなるのはこの瞬間なので、ここを測っておく。
+    //
+    // 当たり判定の中心も魚について動く（`HoleSystem.measure` の
+    // `offsetX`）ので、「魚を叩いたのに隣の空振りになる」は起きない。
+    // 代わりに**円どうしが近づく**ぶん、半径が縮む。
+    // ==================================================================
+    const out = STAGES[0].holes.map((_, i) => (i % 2 === 0 ? OUT_X : 0));
+    const measured: Record<string, number> = {};
+    for (const [name, width, height] of DEVICES) {
+      const holes = new HoleSystem(STAGES[0]);
+      holes.measure(project(width, height), out);
+      measured[name] = Math.min(...holes.describe().map((s) => s.radiusPx));
+      // **円は重ならない**（これは何があっても守る）
+      const spots = holes.describe();
+      for (let i = 0; i < spots.length; i++) {
+        for (let j = i + 1; j < spots.length; j++) {
+          const d = Math.hypot(spots[i].x - spots[j].x, spots[i].y - spots[j].y);
+          expect(spots[i].radiusPx + spots[j].radiusPx, `${name} ${i}-${j}`).toBeLessThanOrEqual(d);
+        }
+      }
+    }
+    // 実測（2026-09-13）。**配置や `OUT_X` を触ったらここも動く**
+    // | 端末 | 穴だけ | 魚が出きったとき |
+    // |---|---|---|
+    // | Pixel 7 | 89.3px | **76.6px** |
+    // | iPhone 12 | 79.7px | **68.4px** |
+    // | 360×600 | 63.6px | 54.5px |
+    // | 横持ち | 41.0px | 35.1px |
+    //
+    // **見た目の的は円より大きい。** 魚は長さ 1.1・高さ 0.44（Pixel 7 で
+    // およそ 100×40px）あるので、体のどこを押しても中心から 76px に入る。
+    expect(measured['Pixel 7']).toBeGreaterThan(72);
+    expect(measured['iPhone 12']).toBeGreaterThan(64);
+    expect(measured['小さい端末']).toBeGreaterThan(50);
+  });
+
   it('どこを押しても、当たるか null が返る（例外を投げない。不変条件1）', () => {
     const holes = new HoleSystem(STAGES[0]);
     holes.measure(project(412, 839));
@@ -281,11 +327,35 @@ describe('さかなの状態遷移（§4-1 / §4-3）', () => {
     for (let i = 0; i < Math.round(seconds / dt); i++) fish.update(dt);
   }
 
+  it('声が先、姿はあと（`calling` のあいだは1画素も出さない）', () => {
+    // ==================================================================
+    // 実機で「**『ばあっ』する前にチラッと見えている**」と言われた
+    // （2026-09-13）。声と同時に動きはじめていたのが原因。
+    // 「何も見えない状態で『ばあっ』と言って出てくる」が人間の指定。
+    // ==================================================================
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    expect(fish.actors[0].state).toBe('calling');
+    advance(fish, TIMING.callSec * 0.5);
+    expect(fish.actors[0].state).toBe('calling');
+    // **`calling` のあいだ reveal は 0 のまま**（＝穴の中から出ていない）
+    expect(fish.actors[0].reveal).toBe(0);
+    advance(fish, TIMING.callSec * 0.6);
+    expect(fish.actors[0].state).toBe('rising');
+  });
+
+  it('`calling` の魚は叩けない（まだ見えていないので）', () => {
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    expect(fish.actors[0].state).toBe('calling');
+    expect(fish.hit(0)).toBe(false);
+  });
+
   it('出てくるのは 0.65秒（v0.1 の 0.22秒から遅くした）', () => {
     expect(TIMING.risingSec).toBeCloseTo(0.65, 5);
     const fish = makeSystem();
     fish.spawn(0, 0, 1);
-    advance(fish, 0.3);
+    advance(fish, TIMING.callSec + 0.3);
     // 途中では出きっていない
     expect(fish.actors[0].state).toBe('rising');
     expect(fish.actors[0].reveal).toBeGreaterThan(0);
@@ -295,11 +365,25 @@ describe('さかなの状態遷移（§4-1 / §4-3）', () => {
     expect(fish.actors[0].reveal).toBe(1);
   });
 
+  it('叩くとたんこぶができる（2026-09-13 に人間が決めた）', () => {
+    // **叩かれたことが形に残る**ので、当たったかどうかが一目で分かる
+    const fish = makeSystem();
+    fish.spawn(0, 0, 1);
+    advance(fish, TIMING.callSec + 0.7);
+    expect(fish.actors[0].state).toBe('up');
+    expect(fish.actors[0].bump).toBe(0);
+    fish.hit(0);
+    // **叩いたその場で育ちはじめる**（0フレーム原則と同じ）
+    expect(fish.actors[0].bump).toBeGreaterThan(0);
+    advance(fish, 0.25);
+    expect(fish.actors[0].bump).toBeCloseTo(1, 1);
+  });
+
   it('出ている時間は 4.0秒（v0.1 の 2.6秒から伸ばした）', () => {
     expect(TIMING.upSec).toBeCloseTo(4.0, 5);
     const fish = makeSystem();
     fish.spawn(0, 0, 1);
-    advance(fish, 0.7 + 3.5);
+    advance(fish, TIMING.callSec + 0.7 + 3.5);
     expect(fish.actors[0].state).toBe('up');
     advance(fish, 0.7);
     expect(fish.actors[0].state).toBe('retreating');
@@ -313,7 +397,7 @@ describe('さかなの状態遷移（§4-1 / §4-3）', () => {
     // ==================================================================
     const fish = makeSystem();
     fish.spawn(0, 0, 1);
-    advance(fish, 0.7);
+    advance(fish, TIMING.callSec + 0.7);
     expect(fish.actors[0].state).toBe('up');
     const ok = fish.hit(0);
     expect(ok).toBe(true);
@@ -327,7 +411,7 @@ describe('さかなの状態遷移（§4-1 / §4-3）', () => {
     // 連打すると開き量の最大が 0.037 にしかならなかった
     const fish = makeSystem();
     fish.spawn(0, 0, 1);
-    advance(fish, 0.2);
+    advance(fish, TIMING.callSec + 0.2);
     expect(fish.actors[0].state).toBe('rising');
     expect(fish.hit(0)).toBe(true);
     expect(fish.actors[0].squash).toBeGreaterThan(0);
@@ -336,7 +420,7 @@ describe('さかなの状態遷移（§4-1 / §4-3）', () => {
   it('潰れている最中に叩いても反応は返るが、得点は増えない（§4-6）', () => {
     const fish = makeSystem();
     fish.spawn(0, 0, 1);
-    advance(fish, 0.7);
+    advance(fish, TIMING.callSec + 0.7);
     expect(fish.hit(0)).toBe(true);
     // 2回目以降は false（得点が増えない）。**例外は投げない**
     expect(fish.hit(0)).toBe(false);
@@ -347,7 +431,7 @@ describe('さかなの状態遷移（§4-1 / §4-3）', () => {
     // **「連打しても壊れない」は「連打しても動く」まで確かめる**（§14-1）
     const fish = makeSystem();
     fish.spawn(0, 0, 1);
-    advance(fish, 0.7);
+    advance(fish, TIMING.callSec + 0.7);
     fish.hit(0);
     let maxSquash = 0;
     for (let i = 0; i < 60; i++) {
@@ -380,12 +464,24 @@ describe('出現の抽選（§4-2 / §4-7）', () => {
     // 「ばあ！」は押すまで画面が止まっていた。ここが 0 になると、
     // 子どもが「叩くものが無い」画面を見ることになる。
     // ==================================================================
+    // ==================================================================
+    // **数えはじめるのは、最初の1匹が見えてから**（2026-09-13）。
+    //
+    // 「何も見えない状態で『ばあっ』と言って出てくる」を人間が指定したので、
+    // 起動直後は `calling`（0.38秒）のあいだ叩ける相手が居ない。
+    // これは**仕様どおり**で、遊んでいる最中の「画面が空になる」とは別。
+    // 実測でもここだけが 21フレーム（＝0.38秒ぶん）だった。
+    // ==================================================================
     const { fish, spawner } = makeBoth();
     const dt = 1 / 60;
+    // 最初の1匹が見えるまで進める
+    for (let i = 0; i < 600 && fish.countHittable() === 0; i++) {
+      spawner.update(dt, fish);
+      fish.update(dt);
+    }
+    expect(fish.countHittable()).toBeGreaterThan(0);
+
     let zeroFrames = 0;
-    // 最初の1フレームで出はじめる
-    spawner.update(dt, fish);
-    fish.update(dt);
     for (let i = 0; i < 60 * 60; i++) {
       spawner.update(dt, fish);
       fish.update(dt);
@@ -411,15 +507,17 @@ describe('出現の抽選（§4-2 / §4-7）', () => {
   it('同じ水たまりから続けて出さない', () => {
     const { fish, spawner } = makeBoth();
     const dt = 1 / 60;
+    // **出た瞬間（`calling` に入った最初のフレーム）だけを拾う。**
+    // 状態と経過時間で拾うと、同じ1匹を2フレーム数えてしまう
     const order: number[] = [];
-    const seen = new Set<number>();
+    const wasHidden = fish.actors.map(() => true);
     for (let i = 0; i < 60 * 120; i++) {
       spawner.update(dt, fish);
       fish.update(dt);
-      for (const actor of fish.actors) {
-        if (actor.state === 'rising' && actor.reveal < 0.05 && !seen.has(actor.holeIndex * 1e6 + i)) {
-          if (actor.elapsed <= dt * 1.5) order.push(actor.holeIndex);
-        }
+      for (let a = 0; a < fish.actors.length; a++) {
+        const hidden = fish.actors[a].state === 'hidden';
+        if (wasHidden[a] && !hidden) order.push(fish.actors[a].holeIndex);
+        wasHidden[a] = hidden;
       }
     }
     expect(order.length).toBeGreaterThan(10);

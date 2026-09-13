@@ -31,6 +31,7 @@ export class StageRoot {
   readonly ambient: { sky: THREE.Color; ground: THREE.Color };
 
   private readonly waters: WaterShape[] = [];
+  private readonly _offsets: number[] = [];
   private readonly disposables: { dispose(): void }[] = [];
 
   private constructor(
@@ -133,6 +134,21 @@ export class StageRoot {
   }
 
   /**
+   * 穴ごとの「いま魚が居る x のずれ」。当たり判定の中心をここへ動かす。
+   *
+   * **毎フレーム作り直さない**（§10-3）ので配列を使い回す。
+   */
+  fishOffsets(): readonly number[] {
+    this._offsets.length = this.holes.runtimes.length;
+    this._offsets.fill(0);
+    for (const actor of this.fish.actors) {
+      if (actor.holeIndex < 0 || actor.state === 'hidden' || actor.state === 'calling') continue;
+      this._offsets[actor.holeIndex] = actor.group.position.x;
+    }
+    return this._offsets;
+  }
+
+  /**
    * `elapsed` は**更新時計**の秒（`Loop.simulatedSeconds`）。壁時計を読まない。
    * `dt` は固定タイムステップ（1/60）。
    */
@@ -144,6 +160,9 @@ export class StageRoot {
       dt,
       this.holes.runtimes.map((r) => r.group)
     );
+    // **切り取り面を穴の口に合わせる。** これが無いと、
+    // 隠れている魚が穴の外に見える（実機で「チラッと見えている」と言われた）
+    this.fish.updateClipping(this.holes.runtimes.map((r) => r.worldPosition.x));
     // 魚は**いま居る水たまりの子**に付け替える。
     // `holeIndex` が変わったときだけ動かす（毎フレーム付け替えない）
     for (const actor of this.fish.actors) {

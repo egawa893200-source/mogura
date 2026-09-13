@@ -53,6 +53,17 @@ export class Renderer {
       preserveDrawingBuffer: false,
     });
 
+    // ==================================================================
+    // **切り取り（clipping）を有効にする**（2026-09-13）。
+    //
+    // 魚は「穴の口から出てくる」ので、**口より左は描かない**ようにする。
+    // これが無いと、隠れているはずの魚が穴の外にはみ出して見える
+    // （実機で「『ばあっ』の前にチラッと見えている」と言われた）。
+    // 板で覆って隠す手もあるが、穴を縦長にすると覆う板のほうが大きくなって
+    // 背景を隠してしまう。切り取りなら**形に関係なく確実に消える**。
+    // ==================================================================
+    this.renderer.localClippingEnabled = true;
+
     this.renderer.setPixelRatio(this.basePixelRatio);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 

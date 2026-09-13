@@ -25,17 +25,17 @@ import * as THREE from 'three';
 import { TIMING } from '../data/timing';
 import type { FishConfig } from '../types';
 import { createProceduralFish, type ProceduralFish } from './ProceduralFish';
-import { FISH_Z, WATERLINE_Y } from './WaterShape';
+import { FISH_Z, MOUTH_X, OUT_X } from './WaterShape';
 
-export type FishState = 'hidden' | 'rising' | 'up' | 'hit' | 'retreating';
+export type FishState = 'hidden' | 'calling' | 'rising' | 'up' | 'hit' | 'retreating';
 
 /**
- * 沈んでいるとき、水面の線より下に置く量（体の高さに対する比）。
+ * 隠れているときの中心 x（穴の中心からの左方向の距離）。
  *
- * **0 だと頭が覗く。** 「ばあ！」でも、縁とちょうど同じ高さに置くと
- * 見下ろし 11.8° のカメラから頭が見えた。
+ * **口（`MOUTH_X`）より左に体がまるごと入る位置。**
+ * 切り取り面が口に置いてあるので、ここに居るあいだは1画素も描かれない。
  */
-const SINK = 0.52;
+const HIDE_X = -1.15;
 
 /**
  * 出きったとき、水面の線より上に出る量（**体の高さに対する比**）。
@@ -48,12 +48,10 @@ const SINK = 0.52;
  * 大きい絵 0.225 / 小さい手続き生成 0.127 と2倍近い差がついた。
  * 体の高さで割ってそろえると、大きさによらず一定になる。
  *
- * 0.30 ＝ 体の中心が水面の 0.30 ぶん上。体の **8割**が水面の上に出て、
- * 残りが手前の水面に隠れる（＝水から出ている形になる）。
- * **1.0 にしないこと** —— 体が水面から完全に離れて、池の上に浮いて見える。
+ * 出きったときの中心 x（`OUT_X`）は `WaterShape` が持っている。
  * ==========================================================================
  */
-const LIFT = 0.3;
+const BOB = 0.04;
 
 export interface FishActor {
   readonly config: FishConfig;
@@ -63,6 +61,13 @@ export interface FishActor {
   reveal: number;
   /** 潰れの進み 0..1（§4-3。叩いた**その場**で 0 より大きくする） */
   squash: number;
+  /**
+   * たんこぶの育ち 0..1（2026-09-13、人間が決めた）。
+   *
+   * **叩かれたことが形に残る**ので、当たったかどうかが一目で分かる。
+   * 叩いた**その場**で 0 より大きくする（`squash` と同じ理由）。
+   */
+  bump: number;
   /** いまどの水たまりに居るか。`hidden` のときは -1 */
   holeIndex: number;
   /** いまの状態に入ってからの秒数 */
@@ -93,10 +98,27 @@ export class FishSystem {
         state: 'hidden',
         reveal: 0,
         squash: 0,
+        bump: 0,
         holeIndex: -1,
         elapsed: 0,
         speed: 1,
       });
+    }
+  }
+
+  /**
+   * 切り取り面を、いま居る穴の口に合わせる。
+   *
+   * **これが無いと、隠れている魚が穴の外に見える。**
+   * 面はワールド座標なので、穴が変わるたびに置き直す。
+   */
+  updateClipping(holeWorldX: readonly number[]): void {
+    for (let i = 0; i < this.actors.length; i++) {
+      const actor = this.actors[i];
+      const shape = this.shapes[i];
+      if (!shape) continue;
+      const base = actor.holeIndex >= 0 ? (holeWorldX[actor.holeIndex] ?? 0) : 0;
+      shape.setClipX(base + MOUTH_X);
     }
   }
 
@@ -177,9 +199,11 @@ export class FishSystem {
   spawn(actorIndex: number, holeIndex: number, speed = 1): boolean {
     const actor = this.actors[actorIndex];
     if (!actor || actor.state !== 'hidden') return false;
-    actor.state = 'rising';
+    // **まず `calling`。** 声が鳴ってから出てくる
+    actor.state = 'calling';
     actor.reveal = 0;
     actor.squash = 0;
+    actor.bump = 0;
     actor.holeIndex = holeIndex;
     actor.elapsed = 0;
     actor.speed = speed;
@@ -212,13 +236,16 @@ export class FishSystem {
     // （§4-6 の「外れを失敗にしない」と同じ考え）。
     // 連打で稼げる心配は無い —— 叩いた時点で `hit` に移るので、
     // 2回目からは下の条件で弾かれる
+    // **`calling` は叩けない。** まだ1画素も見えていないので、
+    // 当たっても子どもには「何に当たったか」が分からない
     if (actor.state !== 'rising' && actor.state !== 'up' && actor.state !== 'retreating') {
       return false;
     }
     actor.state = 'hit';
     actor.elapsed = 0;
-    // **次の更新を待たない。** ここで潰れを始める
+    // **次の更新を待たない。** ここで潰れとたんこぶを始める
     actor.squash = 0.001;
+    actor.bump = 0.001;
     return true;
   }
 
@@ -227,6 +254,16 @@ export class FishSystem {
       actor.elapsed += dt;
       switch (actor.state) {
         case 'hidden':
+          break;
+        case 'calling':
+          // **姿を出さない。** ここで「ばあっ！」が鳴る（`App` が拾う）。
+          // 実機で「『ばあっ』する前にチラッと見えている」と言われたので、
+          // 声が先、姿はあと、の順にした
+          actor.reveal = 0;
+          if (actor.elapsed >= TIMING.callSec) {
+            actor.state = 'rising';
+            actor.elapsed = 0;
+          }
           break;
         case 'rising': {
           const dur = TIMING.risingSec * actor.speed;
@@ -260,8 +297,10 @@ export class FishSystem {
           break;
         case 'hit': {
           const t = Math.min(1, actor.elapsed / TIMING.hitSec);
-          // **潰れは 0.12秒で最大、そこから沈む**（§4-4）
+          // **潰れは 0.12秒で最大、そこから引っ込む**（§4-4）
           actor.squash = Math.min(1, actor.elapsed / 0.12);
+          // たんこぶは潰れより少し遅れて育つ（潰れきってから膨らむ）
+          actor.bump = Math.min(1, Math.max(0, (actor.elapsed - 0.06) / 0.16));
           actor.reveal = 1 - t;
           if (t >= 1) this.retire(actor);
           break;
@@ -281,23 +320,30 @@ export class FishSystem {
     actor.state = 'hidden';
     actor.reveal = 0;
     actor.squash = 0;
+    actor.bump = 0;
     actor.holeIndex = -1;
     actor.elapsed = 0;
     actor.group.visible = false;
   }
 
-  /** 水たまりのローカル座標に置く。`HoleSystem` 側の group の子になっている */
+  /**
+   * 穴のローカル座標に置く。`HoleSystem` 側の group の子になっている。
+   *
+   * **左（穴の中）から右へ泳ぎ出る**（2026-09-13、実機を見て人間が決めた）。
+   * 上下に浮き上がる形は、見下ろしの浅い角度では「出てきた」に見えなかった。
+   */
   private place(actor: FishActor): void {
     if (actor.state === 'hidden') return;
-    const shape = this.shapes[this.actors.indexOf(actor)];
-    const height = shape?.height ?? 0.5;
-    // **水面の線から測る。** 沈んでいるとき下、出きったとき上。
-    // どちらも体の高さに対する比なので、種類によらず同じだけ出る
-    const y = WATERLINE_Y + height * (-SINK + actor.reveal * (SINK + LIFT));
-    actor.group.position.set(0, y, FISH_Z);
+    const index = this.actors.indexOf(actor);
+    const shape = this.shapes[index];
+    const x = HIDE_X + actor.reveal * (OUT_X - HIDE_X);
+    // 出ているあいだ、ゆっくり上下に揺れる（止まって見えないように）
+    const y = actor.state === 'up' ? Math.sin(actor.elapsed * 2.2) * BOB : 0;
+    actor.group.position.set(x, y, FISH_Z);
     // 潰れ。**縦に潰して横に広がる**（§4-4 の「形」）
     const s = 1 - actor.squash * 0.55;
     actor.group.scale.set(1 + actor.squash * 0.3, s, 1);
+    shape?.setBump(actor.bump);
   }
 
   dispose(): void {

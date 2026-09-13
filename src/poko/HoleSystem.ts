@@ -89,10 +89,20 @@ export class HoleSystem {
    * **毎フレーム呼ぶこと。** 画面の向きが変わると全部ずれる。
    * ここで測った値を `radiusAt()` と `pick()` が使う。
    */
-  measure(projector: Projector): void {
+  measure(projector: Projector, offsetX?: readonly number[]): void {
     for (let i = 0; i < this.runtimes.length; i++) {
       const runtime = this.runtimes[i];
-      const ok = projector.project(runtime.worldPosition, _screen);
+      // ==================================================================
+      // **当たり判定は、穴ではなく「いま魚が居るところ」で見る**
+      // （2026-09-13。魚が穴の右へ泳ぎ出る形にしたため）。
+      //
+      // 穴の中心のままだと、**魚を叩いたのに隣の穴の空振りになる**回ができる。
+      // 左の列の魚は右へ 0.55 進むので、右の列の穴に近づくため。
+      // 「押したのに隣が反応する」は、みずのなかの貝と岩で実際に起きている。
+      // ==================================================================
+      _at.copy(runtime.worldPosition);
+      _at.x += offsetX?.[i] ?? 0;
+      const ok = projector.project(_at, _screen);
       this.onScreen[i] = ok;
       if (ok) {
         this.sx[i] = _screen.x;
@@ -156,3 +166,5 @@ export class HoleSystem {
 }
 
 const _screen = { x: 0, y: 0 };
+/** 当たり判定の中心。**毎フレーム new をしない**（§10-3） */
+const _at = new THREE.Vector3();

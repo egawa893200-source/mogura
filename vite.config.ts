@@ -7,11 +7,24 @@ import { VitePWA } from 'vite-plugin-pwa';
 // （通っていないと、素材を置いた瞬間に 404 になるのに気づけない）。
 const base = process.env.BASE_PATH ?? '/';
 
+/**
+ * **Service Worker を外してビルドする逃げ道**（`NO_PWA=1`）。
+ *
+ * 実機で試すために Artifact として公開するときに使う。
+ * SW が入っていると、こちらが作り直しても端末に古いキャッシュが残って
+ * 「直したはずのものが直っていない」になる。
+ * **本番（Netlify）では外さない** —— 機内モードでも起動する価値は大きい。
+ */
+const noPwa = process.env.NO_PWA === '1';
+
 export default defineConfig({
   base,
   plugins: [
-    // PWA: オフラインキャッシュ。ホーム画面に追加でフルスクリーン起動する
+    // PWA: オフラインキャッシュ。ホーム画面に追加でフルスクリーン起動する。
+    // **プラグイン自体は外さない** —— `virtual:pwa-register` が解決できなくなって
+    // ビルドが落ちる。`disable` で中身だけ止める
     VitePWA({
+      disable: noPwa,
       registerType: 'autoUpdate',
       // 開発中は SW を動かさない（古いキャッシュが残ると原因の切り分けができない）
       devOptions: { enabled: false },

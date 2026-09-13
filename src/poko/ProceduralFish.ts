@@ -48,10 +48,19 @@ const FINS: Record<FishConfig['fins'], number> = {
 
 export interface ProceduralFish {
   readonly group: THREE.Group;
-  /** **見かけの**高さ（ワールド）。縁から出す量を決めるのに使う */
+  /** **見かけの**高さ（ワールド） */
   readonly height: number;
   /** 見かけの幅（ワールド） */
   readonly width: number;
+  /**
+   * **この x より左を描かない**（ワールド座標）。
+   *
+   * 穴の口に合わせておくと、隠れているあいだ1画素も見えない。
+   * 板で覆うのと違って、**形に関係なく確実に消える。**
+   */
+  setClipX(worldX: number): void;
+  /** たんこぶの育ち 0..1。叩かれた印（2026-09-13、人間が決めた） */
+  setBump(t: number): void;
   dispose(): void;
 }
 
@@ -151,6 +160,21 @@ export function createProceduralFish(config: FishConfig): ProceduralFish {
   const patternGeometry = addPattern(group, config, h, w, accentMaterial);
   if (patternGeometry) disposables.push(patternGeometry);
 
+  // たんこぶ。**叩かれるまで見えない**（`setBump(0)` で潰しておく）。
+  // 頭の上に出す ——「叩かれた」が形に残るので、当たったかどうかが一目で分かる
+  const bumpGeometry = new THREE.SphereGeometry(0.5, 10, 8);
+  const bumpMaterial = new THREE.MeshStandardMaterial({
+    color: 0xff8a8a,
+    roughness: 0.5,
+    metalness: 0,
+  });
+  const bump = new THREE.Mesh(bumpGeometry, bumpMaterial);
+  bump.name = 'fish.bump';
+  bump.position.set(LENGTH * 0.18, h * 0.52, 0);
+  bump.visible = false;
+  group.add(bump);
+  disposables.push(bumpGeometry, bumpMaterial);
+
   // 目。**白目を大きく取る**（幼児向けの絵は目で表情が決まる）
   const eyeGeometry = new THREE.SphereGeometry(0.5, 10, 8);
   const whiteMaterial = new THREE.MeshStandardMaterial({ color: 0xfdfdf8, roughness: 0.4 });
@@ -193,10 +217,32 @@ export function createProceduralFish(config: FishConfig): ProceduralFish {
   }
   group.scale.setScalar(scale);
 
+  // 切り取り面。**材質ごとに持たせる**（three は material 単位で見る）
+  const clip = new THREE.Plane(new THREE.Vector3(1, 0, 0), 0);
+  const materials: THREE.Material[] = [
+    bodyMaterial,
+    accentMaterial,
+    whiteMaterial,
+    pupilMaterial,
+    bumpMaterial,
+  ];
+  for (const material of materials) material.clippingPlanes = [clip];
+
   return {
     group,
     height: size.y * scale,
     width: size.x * scale,
+    setClipX(worldX: number) {
+      // 面の向きは +x なので、constant は -x
+      clip.constant = -worldX;
+    },
+    setBump(t: number) {
+      bump.visible = t > 0;
+      if (t <= 0) return;
+      // ぷくっと出る。**大きくしすぎない**（魚の輪郭が壊れる）
+      const r = h * 0.22 * Math.min(1, t * 1.2);
+      bump.scale.set(r, r * 1.15, r);
+    },
     dispose() {
       // **1つでも漏らすとリークする**（不変条件8）
       for (const item of disposables) item.dispose();

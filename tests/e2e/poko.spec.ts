@@ -21,7 +21,14 @@ declare global {
       getHoleHitCount(): number;
       getStageId(): string;
       getHoles(): { id: string; x: number; y: number; radiusPx: number }[];
-      getFish(): { id: string; state: string; reveal: number; squash: number; holeIndex: number }[];
+      getFish(): {
+        id: string;
+        state: string;
+        reveal: number;
+        squash: number;
+        bump: number;
+        holeIndex: number;
+      }[];
       getHittableCount(): number;
       getUpSec(): number;
       getFishHitCount(): number;
@@ -161,26 +168,46 @@ test.describe('骨組み（Phase 1）', () => {
     // 2回続けて同じ数になるまで描いてから測る
     // ==================================================================
     await boot(page);
+    // **3回続けて同じ数になるまで待つ。** 2回では、たまたま同じ値を
+    // 2回読んでしまって「落ち着いた」と誤判定する回があった（実測で
+    // 3回に1回落ちた）。CLAUDE.md の
+    // 「`renderer.info.memory` は数え終わる前に測ると『漏れている』と出る」
     const settle = async (): Promise<{ geometries: number; textures: number }> => {
+      let same = 0;
       let last = await page.evaluate(() => window.__poko.getRenderInfo());
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 40; i++) {
         await waitSimulated(page, 0.2);
         const now = await page.evaluate(() => window.__poko.getRenderInfo());
-        if (now.geometries === last.geometries && now.textures === last.textures) return now;
+        same = now.geometries === last.geometries && now.textures === last.textures ? same + 1 : 0;
         last = now;
+        if (same >= 3) return now;
       }
       return last;
     };
-    const before = await settle();
-    for (let i = 0; i < 10; i++) {
-      await page.evaluate(() => window.__poko.setStage('umi'));
-      await page.waitForFunction(() => window.__poko.getStageId() === 'umi');
-      await page.evaluate(() => window.__poko.setStage('ike'));
-      await page.waitForFunction(() => window.__poko.getStageId() === 'ike');
-    }
+    const roundTrip = async (times: number): Promise<void> => {
+      for (let i = 0; i < times; i++) {
+        await page.evaluate(() => window.__poko.setStage('umi'));
+        await page.waitForFunction(() => window.__poko.getStageId() === 'umi');
+        await page.evaluate(() => window.__poko.setStage('ike'));
+        await page.waitForFunction(() => window.__poko.getStageId() === 'ike');
+      }
+    };
+    // ==================================================================
+    // **「前より増えていない」では測れない**（2026-09-13 の実測）。
+    //
+    // `renderer.info.memory` が数えるのは**描画に使われた**ものなので、
+    // 差し替えの途中（古いのを捨てて新しいのがまだ描かれていない）に
+    // 落ち着いたと誤判定すると、あとの数のほうが大きく出る。
+    // 3回続けて同じ数を待っても、5回に2回そうなった。
+    //
+    // 見たいのは**増え続けないこと**（不変条件8）なので、
+    // 「10往復しても上限を超えない」で見る。捨て漏れていれば
+    // 1往復ぶん（20前後）ずつ増えるので、10往復で 200 を超えて一目で分かる。
+    // ==================================================================
+    await roundTrip(10);
     const after = await settle();
-    expect(after.geometries).toBeLessThanOrEqual(before.geometries + 2);
-    expect(after.textures).toBeLessThanOrEqual(before.textures + 2);
+    expect(after.geometries).toBeLessThan(60);
+    expect(after.textures).toBeLessThan(30);
   });
 
   test('叩ける相手が画面から途切れない（不変条件4c）', async ({ page }) => {
@@ -386,6 +413,50 @@ test.describe('骨組み（Phase 1）', () => {
     const after = await page.evaluate(() => window.__poko.getTapCount());
     // **10回とも受け取る。** 得点は1回ぶんしか増えない（§4-6）が、反応は返る
     expect(after).toBe(before + 10);
+  });
+
+  test('「ばあっ」の時点では1画素も見えていない（実機の指摘）', async ({ page }) => {
+    // ==================================================================
+    // 実機で「**『ばあっ』する前にチラッと見えている**」と言われた
+    // （2026-09-13）。声と同時に動きはじめていたのが原因。
+    // `calling`（0.38秒）を挟んで、**声が先・姿はあと**にした。
+    // ==================================================================
+    await boot(page);
+    const seen = await page.evaluate(async () => {
+      let callingFrames = 0;
+      let leaked = 0;
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 20) {
+        for (const f of window.__poko.getFish()) {
+          if (f.state === 'calling') {
+            callingFrames++;
+            // **`calling` のあいだ reveal は 0**（穴の外に1画素も出ていない）
+            if (f.reveal > 0) leaked++;
+          }
+        }
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return { callingFrames, leaked };
+    });
+    expect(seen.callingFrames).toBeGreaterThan(0);
+    expect(seen.leaked).toBe(0);
+  });
+
+  test('叩くとたんこぶができる（実機の要望）', async ({ page }) => {
+    await boot(page);
+    const hole = await page.evaluate(async () => {
+      while (true) {
+        const up = window.__poko.getFish().find((f) => f.state === 'up');
+        if (up) return window.__poko.getHoles()[up.holeIndex];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+    });
+    await page.mouse.click(hole.x, hole.y);
+    // **叩いたその場で育ちはじめる**（0フレーム原則と同じ）
+    const bump = await page.evaluate(() =>
+      Math.max(...window.__poko.getFish().map((f) => f.bump))
+    );
+    expect(bump).toBeGreaterThan(0);
   });
 
   test('素材が1つも無くても起動して、どこを押しても反応が返る（不変条件7）', async ({ page }) => {

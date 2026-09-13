@@ -25,6 +25,16 @@ const SPLASH_SEC = 0.5;
 const SHAKE_DEG = 2.5;
 const SHAKE_SEC = 0.15;
 
+/**
+ * ピコピコハンマーが見えている時間（秒）。
+ *
+ * **短くすること**（2026-09-13、人間が決めた）。
+ * 長いと魚が隠れるし、次の一撃の邪魔になる。
+ * 振り下ろす 0.06秒 ＋ 戻る 0.16秒。
+ */
+const HAMMER_DOWN_SEC = 0.06;
+const HAMMER_SEC = 0.22;
+
 interface Drop {
   mesh: THREE.Mesh;
   vx: number;
@@ -40,6 +50,10 @@ export class HitEffect {
   private readonly material: THREE.MeshBasicMaterial;
   /** 揺れている水たまり。index → 残り秒数 */
   private readonly shakes = new Map<number, number>();
+  /** ピコピコハンマー。**1本を使い回す**（毎フレーム new をしない） */
+  private readonly hammerGroup = new THREE.Group();
+  private hammerLeft = 0;
+  private readonly hammerParts: { dispose(): void }[] = [];
 
   constructor(color: string) {
     // **粒は最初に作って使い回す。** 叩くたびに作ると、連打でゴミが出る
@@ -49,6 +63,7 @@ export class HitEffect {
       transparent: true,
       toneMapped: false,
     });
+    this.buildHammer();
     for (let i = 0; i < SPLASH_COUNT * 2; i++) {
       const mesh = new THREE.Mesh(this.geometry, this.material);
       mesh.visible = false;
@@ -87,6 +102,48 @@ export class HitEffect {
   }
 
   /**
+   * ピコピコハンマーを振り下ろす（2026-09-13、人間が決めた）。
+   *
+   * **叩いたことが絵で分かる**ので、1歳半にも「自分がやった」が読める。
+   * 叩いた場所の**右上**から振り下ろす（右利きの見え方）。
+   */
+  hammer(at: THREE.Vector3): void {
+    this.hammerGroup.position.copy(at);
+    this.hammerGroup.visible = true;
+    this.hammerLeft = HAMMER_SEC;
+  }
+
+  /** ハンマーを組む。柄と、赤い頭（ピコピコハンマーの見た目） */
+  private buildHammer(): void {
+    const headGeometry = new THREE.CylinderGeometry(0.19, 0.19, 0.3, 12);
+    const headMaterial = new THREE.MeshStandardMaterial({
+      color: 0xf2453d,
+      roughness: 0.5,
+      metalness: 0,
+    });
+    const head = new THREE.Mesh(headGeometry, headMaterial);
+    head.name = 'hammer.head';
+    head.rotation.z = Math.PI / 2;
+    head.position.set(0, 0.3, 0);
+    this.hammerGroup.add(head);
+
+    const gripGeometry = new THREE.CylinderGeometry(0.055, 0.055, 0.62, 8);
+    const gripMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3f6fd8,
+      roughness: 0.6,
+      metalness: 0,
+    });
+    const grip = new THREE.Mesh(gripGeometry, gripMaterial);
+    grip.name = 'hammer.grip';
+    grip.position.set(0, 0.66, 0);
+    this.hammerGroup.add(grip);
+
+    this.hammerGroup.visible = false;
+    this.group.add(this.hammerGroup);
+    this.hammerParts.push(headGeometry, headMaterial, gripGeometry, gripMaterial);
+  }
+
+  /**
    * @param holeGroups 水たまりの group。**揺れはここに掛ける**
    */
   update(dt: number, holeGroups: readonly THREE.Object3D[]): void {
@@ -102,6 +159,24 @@ export class HitEffect {
       drop.vy -= 4.5 * dt; // 落ちる
       // 消えぎわに小さくする（透明度は material を共有しているので触らない）
       drop.mesh.scale.setScalar(0.08 * (drop.life / SPLASH_SEC));
+    }
+
+    if (this.hammerLeft > 0) {
+      this.hammerLeft -= dt;
+      if (this.hammerLeft <= 0) {
+        this.hammerGroup.visible = false;
+      } else {
+        // 振り下ろして戻る。**振り下ろしを速く、戻りをゆっくり**にすると
+        // 「打った」に見える（同じ速さだと往復しているだけに見える）
+        const done = HAMMER_SEC - this.hammerLeft;
+        const t =
+          done < HAMMER_DOWN_SEC
+            ? done / HAMMER_DOWN_SEC
+            : 1 - (done - HAMMER_DOWN_SEC) / (HAMMER_SEC - HAMMER_DOWN_SEC);
+        // 右上から振り下ろす
+        this.hammerGroup.rotation.z = THREE.MathUtils.degToRad(52) * (1 - t) + 0.12;
+        this.hammerGroup.position.y += 0; // 位置は hammer() で決めた場所のまま
+      }
     }
 
     for (const [index, left] of this.shakes) {
@@ -126,5 +201,6 @@ export class HitEffect {
   dispose(): void {
     this.geometry.dispose();
     this.material.dispose();
+    for (const part of this.hammerParts) part.dispose();
   }
 }
