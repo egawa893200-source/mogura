@@ -38,7 +38,7 @@ async function boot(page: Page): Promise<void> {
   await page.goto('/');
   await page.waitForFunction(() => window.__poko !== undefined);
   // 水たまりが並ぶまで待つ（構築は非同期）
-  await page.waitForFunction(() => window.__poko.getHoles().length === 4);
+  await page.waitForFunction(() => window.__poko.getHoles().length === 6);
 }
 
 /** 更新時計で待つ。壁時計は「固まったときに止める」ためだけに使う */
@@ -102,7 +102,7 @@ test.describe('骨組み（Phase 1）', () => {
   test('水たまりの中心を押すと、水たまりに当たる', async ({ page }) => {
     await boot(page);
     const holes = await page.evaluate(() => window.__poko.getHoles());
-    expect(holes).toHaveLength(4);
+    expect(holes).toHaveLength(6);
     for (const hole of holes) {
       const before = await page.evaluate(() => window.__poko.getHoleHitCount());
       await page.mouse.click(hole.x, hole.y);
@@ -143,7 +143,7 @@ test.describe('骨組み（Phase 1）', () => {
     await page.evaluate(() => window.__poko.setStage('umi'));
     await page.waitForFunction(() => window.__poko.getStageId() === 'umi');
     const holes = await page.evaluate(() => window.__poko.getHoles());
-    expect(holes).toHaveLength(4);
+    expect(holes).toHaveLength(6);
     const before = await page.evaluate(() => window.__poko.getTapCount());
     await page.mouse.click(holes[0].x, holes[0].y);
     await expect.poll(() => page.evaluate(() => window.__poko.getTapCount())).toBe(before + 1);
