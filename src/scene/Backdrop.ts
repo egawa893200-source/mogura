@@ -1,0 +1,386 @@
+/**
+ * 場の見た目（道D / 2026-09-06）
+ *
+ * ==========================================================================
+ * 実機で見て「フィールドの安っぽさがすごくわかる」と言われた。
+ * 原因は3つあって、どれも**素材ではなく設定**だった。
+ *
+ *  ① 背景が単色 #12203a の1枚板。空も地面も奥行きも無い
+ *  ② **接地影が1つも無い**（`shadowMap.enabled = false`）。
+ *     隠れ場所が宙に浮いて見える
+ *  ③ 環境マップが無いので `metalness` / `roughness` が何も返さない
+ *     （みずのなかで実測: 0.08 → 0.16 に上げてもハイライトの面積が
+ *      0.0324 → 0.0319 とまったく動かなかった）
+ *
+ * ここでは ①② を、**素材ファイルを1つも足さずに**直す。
+ * どちらも手続き生成のテクスチャなので、`public/` は空のままでよい（不変条件7）。
+ *
+ * shadowMap は使わない。スマホでいちばん高くつくうえ、
+ * この app は光源1つ・カメラ固定なので、**影の形は動かない**。
+ * 動かない影を毎フレーム描き直す理由が無い。
+ * ==========================================================================
+ */
+
+import * as THREE from 'three';
+
+/** 生成するテクスチャの大きさ。グラデーションなので小さくてよい */
+const BACKDROP_SIZE = 64;
+const SHADOW_SIZE = 128;
+
+/**
+ * 背景。上を明るく、下を暗くした縦のグラデーション。
+ *
+ * **横方向にも少しだけ変える。** 完全な横一様にすると、
+ * 画面の端まで同じ帯が続いて「板」に見える。
+ */
+export function createBackdropTexture(top: string, bottom: string): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = BACKDROP_SIZE;
+  canvas.height = BACKDROP_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return new THREE.CanvasTexture(canvas);
+
+  const grad = ctx.createLinearGradient(0, 0, 0, BACKDROP_SIZE);
+  grad.addColorStop(0, top);
+  grad.addColorStop(1, bottom);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, BACKDROP_SIZE, BACKDROP_SIZE);
+
+  // 中央を少しだけ明るく（周辺減光の逆）。奥行きが出る
+  const glow = ctx.createRadialGradient(
+    BACKDROP_SIZE / 2,
+    BACKDROP_SIZE * 0.42,
+    0,
+    BACKDROP_SIZE / 2,
+    BACKDROP_SIZE * 0.42,
+    BACKDROP_SIZE * 0.72
+  );
+  glow.addColorStop(0, 'rgba(255,255,255,0.13)');
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, BACKDROP_SIZE, BACKDROP_SIZE);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
+ * 落ち影。
+ *
+ * ==========================================================================
+ * **中身の形に合わせる**（2026-09-07）。
+ * 楕円1種類で全部に使っていたら、判定で「形の違う2つの隠れ場所に、
+ * 寸法がほぼ同じ（差 3px・2px）ぼやけた楕円が付いている」と指摘された。
+ * 実測でも、うえきばちの影は本体の 2.15倍の幅があった。
+ *
+ * 角のある隠れ場所（はこ・とびら・カーテン・ふとん・すいめん・きのほら）は
+ * 角丸の四角、丸いもの（くさむら・いわ・うえきばち・たまご）は楕円にする。
+ * ==========================================================================
+ */
+export function createShadowTexture(shape: 'ellipse' | 'rect' = 'ellipse'): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = SHADOW_SIZE;
+  canvas.height = SHADOW_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return new THREE.CanvasTexture(canvas);
+
+  const r = SHADOW_SIZE / 2;
+  if (shape === 'ellipse') {
+    const grad = ctx.createRadialGradient(r, r, 0, r, r, r);
+    // **真っ黒にしない。** 背景より少し暗い程度で足りる。
+    // 濃い影は「切り絵を紙に置いた」ように見える
+    // **芯を広く取る。** 中心だけ濃い版は、本体の後ろに隠れて見えなかった
+    grad.addColorStop(0, 'rgba(0,0,0,0.44)');
+    grad.addColorStop(0.74, 'rgba(0,0,0,0.30)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  } else {
+    // 角丸の四角を、外へ向かってぼかす。
+    // **輪郭線にしないこと**（縁だけ濃いと「枠」に見える）
+    // 滲む幅は、板の外側 9%（`DROP_SHADOW.blur` を足したぶん）に合わせる。
+    // ここを広く取りすぎると、影の芯が本体より小さくなって後ろに隠れる
+    const layers = 22;
+    for (let i = layers; i >= 1; i--) {
+      const t = i / layers;
+      const inset = t * r * 0.19;
+      const radius = r * 0.14;
+      ctx.fillStyle = `rgba(0,0,0,${(0.022).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.roundRect(inset, inset, SHADOW_SIZE - inset * 2, SHADOW_SIZE - inset * 2, radius);
+      ctx.fill();
+    }
+  }
+
+  return new THREE.CanvasTexture(canvas);
+}
+
+/**
+ * 隠れ場所の足元に敷く影を1枚作る。
+ *
+ * `shadowMap` は使わない（上の理由）。板に楕円を貼って、
+ * 隠れ場所より少しだけ手前・少しだけ下に置くだけ。
+ */
+export function createContactShadow(texture: THREE.Texture, width: number, height: number): THREE.Mesh {
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  // **地面の影ではなく、背後の落ち影にする。**
+  // この場面は隠れ場所が縦に並ぶ 2.5D の配置で、足元に地面が無い。
+  // 水平に寝かせた楕円はカメラ（見下ろし 11.8°）から見て潰れて見えず、
+  // 実際に1枚も見えなかった。板は立てたまま、少し下・少し奥に置く
+  // **縦に割っておく**（2026-09-13）。地平線より上のぶんだけを
+  // 頂点アルファで消すため（`fadeShadowOverSky`）。2枚のままだと
+  // 上端から下端への一次の傾斜しか作れず、地平線の位置で切れない。
+  // 6分割＝12三角形。29箇所で +290 三角形（予算 +10% に対して 1% 未満）
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height, 1, SHADOW_ROWS), mat);
+  mesh.name = 'contactShadow';
+  mesh.renderOrder = -1;
+  return mesh;
+}
+
+/** 落ち影の板の縦の分割数。地平線で切るために要る */
+export const SHADOW_ROWS = 6;
+
+/**
+ * 落ち影のうち、**地平線より上に乗るぶんだけ**を消す。
+ *
+ * ==========================================================================
+ * **板ぜんたいの不透明度を下げてはいけない**（2026-09-13 に踏んだ）。
+ * `SKY_SHADOW_FADE` を `material.opacity` に掛けていたので、
+ * 空に乗るぶんと一緒に**地面に乗るぶん（＝接地の手がかり）も薄まっていた**。
+ * 実測（baseline → いま）: 接地の暗さ V5 が上の段の6箇所で
+ * ouchi/hako 18.19 → 7.50、ouchi/kaaten 16.57 → 7.82、
+ * noujou/koya 20.44 → 7.73、noujou/wara 17.59 → 7.32、
+ * kyoryu/shida 16.31 → 6.75、kyoryu/ooiwa 13.56 → 6.53 と半分以下に落ちた。
+ * それでいて判定の実測では影の 43.8〜51.9% がまだ空に乗っていた
+ * ——**薄くしただけで、空から消えてはいなかった**。
+ *
+ * だから頂点アルファで高さごとに消す。地面に乗るぶんは 1 のまま。
+ * ==========================================================================
+ */
+export function fadeShadowOverSky(
+  mesh: THREE.Mesh,
+  localToWorldY: (localY: number) => number,
+  horizonY: number,
+  band: number,
+  floor: number
+): void {
+  const geometry = mesh.geometry as THREE.BufferGeometry;
+  const position = geometry.getAttribute('position');
+  const colors = new Float32Array(position.count * 4);
+  for (let i = 0; i < position.count; i++) {
+    const worldY = localToWorldY(position.getY(i));
+    // 地平線のちょうど上で 1 → floor になめらかに落とす。
+    // 段差で切ると、影の途中に水平な線が見える
+    const t = Math.max(0, Math.min(1, (worldY - horizonY) / Math.max(1e-4, band)));
+    const alpha = 1 - (1 - floor) * t;
+    colors[i * 4] = 1;
+    colors[i * 4 + 1] = 1;
+    colors[i * 4 + 2] = 1;
+    colors[i * 4 + 3] = alpha;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4));
+  const material = mesh.material as THREE.MeshBasicMaterial;
+  material.vertexColors = true;
+  material.opacity = 1;
+  material.needsUpdate = true;
+}
+
+/* --- 背景の絵（`SceneConfig.backgroundUrl`）------------------------------- */
+
+/**
+ * 背景の絵を敷く板の大きさ（ワールド）。
+ *
+ * ==========================================================================
+ * **縦横比を崩さないこと。** 手続き生成のグラデーションは 16×16 の
+ * 正方形の板に貼っているが、そこに縦長の絵を貼ると横に潰れる。
+ *
+ * 画面に入る範囲は実測で決めた（2026-09-07）。縦持ちのカメラは
+ * fov 66°・アスペクト 0.49 で、この奥行き（z = -1.55、カメラから 8.75）では
+ * **縦 11.36・横 5.57**。8% の余白を足したものを覆えばよい。
+ *
+ * 絵より板を大きくしない（＝拡大しない）。拡大すると、絵のうち画面に
+ * 出る割合が減って、せっかく描いた端が見えなくなる。
+ * **横持ちでは板が画面の幅に足りない**が、うしろに従来のグラデーションの
+ * 板が残っているので、地の色が出ることはない。
+ * ==========================================================================
+ */
+export function backdropImageSize(aspect: number): { width: number; height: number } {
+  const NEED_W = 5.57 * 1.08;
+  const NEED_H = 11.36 * 1.08;
+  const height = Math.max(NEED_H, NEED_W / Math.max(0.01, aspect));
+  return { width: height * aspect, height };
+}
+
+/**
+ * 背景の絵の板。
+ *
+ * **光を当てない**（`MeshBasicMaterial` ＋ `toneMapped = false`）。
+ * 描いたとおりの色を出すため。動物の絵（道A）とまったく同じ理由で、
+ * 上から光を足すと絵の色が変わる（CLAUDE.md「加算で足す光は、体色を消す」）。
+ */
+export function createBackdropImage(texture: THREE.Texture): THREE.Mesh {
+  const image = texture.image as { width?: number; height?: number } | null;
+  const aspect = (image?.width ?? 1) / (image?.height ?? 1);
+  const { width, height } = backdropImageSize(aspect);
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, height),
+    new THREE.MeshBasicMaterial({ map: texture, toneMapped: false })
+  );
+  mesh.name = 'backdrop.image';
+  // グラデーションの板（z = -1.6）のすぐ手前。隠れ場所より奥
+  mesh.position.set(0, 0, -1.55);
+  mesh.rotation.x = -0.12;
+  return mesh;
+}
+
+/**
+ * 背景の絵から、上半分と下半分の平均色を取る。
+ *
+ * そのまま `HemisphereLight(sky, ground)` に入れる。
+ * 空から降る光は絵の上半分の色、地面から返る光は下半分の色 ——
+ * という当たり前のことを、絵から読むだけで場面ごとに合わせられる。
+ *
+ * **絵が無い場面では `SceneConfig.sky` に落ちる**（不変条件7）。
+ * `document` が無い環境（単体テスト）でも null を返して黙って進む。
+ */
+export function sampleBackdropLight(
+  texture: THREE.Texture
+): { sky: THREE.Color; ground: THREE.Color } | null {
+  if (typeof document === 'undefined') return null;
+  const image = texture.image as CanvasImageSource | null;
+  if (!image) return null;
+  const canvas = document.createElement('canvas');
+  const N = 16;
+  canvas.width = N;
+  canvas.height = N;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(image, 0, 0, N, N);
+  } catch {
+    // 読めない絵でも例外を投げない（不変条件7）
+    return null;
+  }
+  const data = ctx.getImageData(0, 0, N, N).data;
+  const mean = (from: number, to: number): THREE.Color => {
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    for (let y = from; y < to; y++) {
+      for (let x = 0; x < N; x++) {
+        const i = (y * N + x) * 4;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        n++;
+      }
+    }
+    // 絵は sRGB。ライトの色も sRGB で渡す
+    return new THREE.Color().setRGB(r / n / 255, g / n / 255, b / n / 255, THREE.SRGBColorSpace);
+  };
+  return { sky: mean(0, N / 2), ground: mean(N / 2, N) };
+}
+
+/**
+ * 背景の絵の**いちばん明るいところ**を返す（0〜1 の u, v）。
+ *
+ * ==========================================================================
+ * 場面ごとに主光の向きを合わせるために使う。
+ * きょうりゅう の夕日は画面の**左下**（実測 x=34, y=411）にあるのに、
+ * 主光はどの場面でも左上に固定で、判定に
+ * 「太陽より上に浮いている物体が、太陽と反対向きに陰を持っている」
+ * と言われた（2026-09-08）。
+ *
+ * **絵に光を当てているわけではない**（背景も動物も `MeshBasicMaterial`）。
+ * 向きが変わるのは隠れ場所と手続き生成の飾りだけ。
+ * ==========================================================================
+ */
+export function sampleBackdropSun(texture: THREE.Texture): { u: number; v: number } | null {
+  if (typeof document === 'undefined') return null;
+  const image = texture.image as CanvasImageSource | null;
+  if (!image) return null;
+  const N = 24;
+  const canvas = document.createElement('canvas');
+  canvas.width = N;
+  canvas.height = N;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(image, 0, 0, N, N);
+  } catch {
+    return null;
+  }
+  const data = ctx.getImageData(0, 0, N, N).data;
+  let best = -1;
+  let at = 0;
+  for (let i = 0; i < N * N; i++) {
+    const v = data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2];
+    if (v > best) {
+      best = v;
+      at = i;
+    }
+  }
+  return { u: ((at % N) + 0.5) / N, v: (Math.floor(at / N) + 0.5) / N };
+}
+
+/**
+ * 背景の絵の**地平線**を探す（0〜1 の v。見つからなければ null）。
+ *
+ * 絵を横方向に潰して行ごとの明るさにし、上下の行でいちばん大きく変わるところを
+ * 地平線とみなす。段差が小さい絵（水中など「地面が無い」場面）では null を返す。
+ *
+ * 空に落ちる影を弱めるために使う。判定の実測（2026-09-08）で、
+ * のうじょう の こや の影の **52.6%（20,327px）が地平線より上の空**に落ち、
+ * きょうりゅう では夕焼け空の中に三日月形の暗がりが描かれていた。
+ * **空には物が無いので、影も落ちない。**
+ */
+export function sampleBackdropHorizon(texture: THREE.Texture): number | null {
+  if (typeof document === 'undefined') return null;
+  const image = texture.image as CanvasImageSource | null;
+  if (!image) return null;
+  const COLS = 8;
+  const ROWS = 48;
+  const canvas = document.createElement('canvas');
+  canvas.width = COLS;
+  canvas.height = ROWS;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(image, 0, 0, COLS, ROWS);
+  } catch {
+    return null;
+  }
+  const data = ctx.getImageData(0, 0, COLS, ROWS).data;
+  const rows = new Float32Array(ROWS);
+  for (let y = 0; y < ROWS; y++) {
+    let sum = 0;
+    for (let x = 0; x < COLS; x++) {
+      const i = (y * COLS + x) * 4;
+      sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    }
+    rows[y] = sum / COLS;
+  }
+  let best = 0;
+  let at = -1;
+  // 端は絵の枠の影響を受けるので見ない。
+  // **添字は整数にすること。** `ROWS * 0.2` のままだと 9.6 から 1 ずつ増えて
+  // すべて小数の添字になり、`rows[9.6]` が undefined → NaN 比較で
+  // 常に「地平線なし」を返していた（2026-09-08 に踏んだ）
+  for (let y = Math.floor(ROWS * 0.2); y < Math.floor(ROWS * 0.85) - 1; y++) {
+    const step = rows[y] - rows[y + 1];
+    if (step > best) {
+      best = step;
+      at = y;
+    }
+  }
+  // 段差が小さい絵（うみ のように地面が無いもの）では地平線を決めない
+  if (at < 0 || best < 14) return null;
+  return (at + 1) / ROWS;
+}
