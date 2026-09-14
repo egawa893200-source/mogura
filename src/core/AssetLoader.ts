@@ -87,6 +87,22 @@ function fbm(u: number, v: number, basePeriod: number, seed: number, octaves = 3
  * data: / http: などのスキーム付きと、相対パスはそのまま返す。
  */
 export function resolveAssetUrl(url: string): string {
+  // ======================================================================
+  // **配信先が配れない拡張子の逃げ道**（2026-09-14）。
+  //
+  // 静的ホスティングには、拡張子ごとに決まった型しか配らないものがある。
+  // 実機で触ってもらうためのプレビューがこれで、**`.glb` を配れず**
+  // 3D の魚が全部 canvas の絵に落ちていた（不変条件7 が効くので
+  // 動きはするが、**見てほしいものが見られない**）。
+  //
+  // そこに置くときだけ、ページが `window.__pokoAssets` に
+  // 「元のURL → data: URL」を入れておく。**本番（Netlify）では空**なので
+  // この行は素通りする。**URL を差し替えるだけ**で、読み込みの道は変えない
+  // （だから素材が壊れていれば今までどおり黙ってフォールバックする）
+  // ======================================================================
+  const overrides = (globalThis as { __pokoAssets?: Record<string, string> }).__pokoAssets;
+  if (overrides && overrides[url]) return overrides[url];
+
   if (url.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(url)) return url;
   if (!url.startsWith('/')) return url;
   const base = import.meta.env.BASE_URL || '/';
