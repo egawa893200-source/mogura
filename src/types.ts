@@ -31,8 +31,16 @@ export interface StageConfig {
   id: StageId;
   /** ひらがな。開発用で、画面には文字を出さない（§2 不変条件10） */
   label: string;
-  /** null なら手続き生成のグラデーションに落ちる（不変条件7） */
+  /** null なら手続き生成に落ちる（不変条件7） */
   backgroundUrl: string | null;
+  /**
+   * 背景を**手続き生成の水中**にする（`scene/WaterScene.ts`）。
+   *
+   * 「ばあ！」から持ってきた絵は7枚とも陸の場面で、**魚に合うのは うみ だけ**
+   * だった。実機で「背景が野原で魚とマッチしていない」と言われたので、
+   * もう1枚はここで描く。素材ファイルを増やさずに済む。
+   */
+  waterScene?: { top: string; bottom: string; floor: string; seed: number };
   /** 手続き生成の背景（上・下）。絵があるときは使われない */
   sky: readonly [string, string];
   /**

@@ -19,6 +19,7 @@ import { Spawner, seededRandom } from '../poko/Spawner';
 import { createWaterShape, type WaterShape } from '../poko/WaterShape';
 import type { StageConfig } from '../types';
 import { createBackdropImage, createBackdropTexture, sampleBackdropLight } from './Backdrop';
+import { createWaterSceneTexture } from './WaterScene';
 
 export class StageRoot {
   readonly group = new THREE.Group();
@@ -74,7 +75,22 @@ export class StageRoot {
 
     // **素材のURLは必ず `resolveAssetUrl()` を通す**（`AssetLoader` の中で通している）。
     // 通っていないと、フォールバックが効いて「一応動く」ので気づけない
-    const background = await assets.loadOptionalTexture(config.backgroundUrl);
+    const loaded = await assets.loadOptionalTexture(config.backgroundUrl);
+
+    // ==================================================================
+    // **手続き生成の水中も「絵」として扱う**（2026-09-14）。
+    //
+    // 地の板（16×16 の正方形）に貼ってはいけない。この絵は縦 1:2 なので
+    // **横に潰れる**。「ばあ！」で
+    // 「正方形の板に貼らないこと。縦長の絵が横に潰れる」と実測している。
+    // 読み込んだ絵とまったく同じ道（`createBackdropImage`）を通す
+    // ==================================================================
+    const generated = !loaded && config.waterScene
+      ? createWaterSceneTexture(config.waterScene, config.waterScene.seed)
+      : null;
+    const background = loaded ?? generated;
+    // **手続き生成したぶんは自分で捨てる**（`AssetLoader` の持ち物ではない）
+    if (generated) disposables.push(generated);
 
     // 地の板。絵があってもうしろに残す（横持ちで地の色が出ないように）
     const backdrop =
