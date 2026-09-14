@@ -24,7 +24,11 @@ import { STAGES, findStage } from '../../src/data/stages';
 import { ASSIST, MAX_UP_FISH, ROCK_TIMING, TIMING } from '../../src/data/timing';
 import { FishSystem } from '../../src/poko/FishSystem';
 import { HoleSystem } from '../../src/poko/HoleSystem';
-import { RockSystem } from '../../src/poko/RockSystem';
+import {
+  HIDDEN_Z as ROCK_HIDDEN_Z,
+  HIDE_LIFT as ROCK_HIDE_LIFT,
+  RockSystem,
+} from '../../src/poko/RockSystem';
 import { Spawner } from '../../src/poko/Spawner';
 import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
 
@@ -860,4 +864,108 @@ describe('岩陰のばあ（§4-8）', () => {
       }
     }
   });
+});
+
+/**
+ * 岩が魚を隠しているか（2026-09-14、人間の指示「岩に隠れるようにしてください」）。
+ *
+ * ==========================================================================
+ * **位置ではなく遮蔽で確かめる。**
+ *
+ * 「ばあ！」で**高さが正しくても見えていない**ことが3回あった（どれも数値の
+ * テストは通っていた）。逆に、隠しているつもりで**絵では隠れていない**ことも
+ * あった（うみ の すいめん で、クマノミが丸ごと画面に出ていた）。
+ * 画素比較は禁止（魚が常に動く）なので、**カメラからレイを飛ばして**見る。
+ *
+ * **格子は 15×15。** 「ばあ！」で 7×9 にしたら 0.05 幅の隙間をすり抜けた。
+ *
+ * 魚の代わりに**いちばん大きい魚（エイ 1.09 × 1.24 × 0.35）の箱**を置く。
+ * node には DOM が無いので `createProceduralFish` は canvas の絵に落ち、
+ * **実際より小さい板**になる。それで測ると**甘い方向に外れる**ので、
+ * 本番でいちばん大きくなる形を自分で置く。
+ * ==========================================================================
+ */
+describe('岩が魚を隠す（§4-8）', () => {
+  /** いちばん大きい魚の、隠れているときの見かけの大きさ（ワールド） */
+  const RAY = { w: 1.09, h: 1.24, d: 0.35 };
+
+  function occlusionMisses(stageId: string, rockIndex: number): number {
+    const stage = findStage(stageId)!;
+    const rocks = new RockSystem(stage, null);
+    const scene = new THREE.Group();
+    scene.add(rocks.group);
+
+    // 魚の箱を、`place()` が reveal 0 で置くのと同じ姿勢で置く
+    const runtime = rocks.runtimes[rockIndex];
+    const s = ROCK_TIMING.fishScale * ROCK_TIMING.hiddenScale;
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(RAY.w * s, RAY.h * s, RAY.d * s),
+      new THREE.MeshBasicMaterial()
+    );
+    box.name = 'fish';
+    box.position.set(
+      runtime.worldPosition.x,
+      runtime.worldPosition.y + ROCK_HIDE_LIFT,
+      ROCK_HIDDEN_Z
+    );
+    scene.add(box);
+    scene.updateMatrixWorld(true);
+
+    const camera = new THREE.PerspectiveCamera(66, 412 / 839, 0.1, 100);
+    camera.position.set(0, 0.3, 7.2);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+
+    // 箱の見かけの矩形（8隅を投影して囲む）
+    const bb = new THREE.Box3().setFromObject(box);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    const corner = new THREE.Vector3();
+    for (let i = 0; i < 8; i++) {
+      corner.set(
+        i & 1 ? bb.max.x : bb.min.x,
+        i & 2 ? bb.max.y : bb.min.y,
+        i & 4 ? bb.max.z : bb.min.z
+      );
+      corner.project(camera);
+      minX = Math.min(minX, corner.x);
+      maxX = Math.max(maxX, corner.x);
+      minY = Math.min(minY, corner.y);
+      maxY = Math.max(maxY, corner.y);
+    }
+
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let misses = 0;
+    const N = 15;
+    for (let iy = 0; iy < N; iy++) {
+      for (let ix = 0; ix < N; ix++) {
+        ndc.set(
+          minX + ((maxX - minX) * ix) / (N - 1),
+          minY + ((maxY - minY) * iy) / (N - 1)
+        );
+        raycaster.setFromCamera(ndc, camera);
+        const hits = raycaster.intersectObject(scene, true);
+        if (hits.length === 0) continue;
+        // **いちばん手前が魚なら、そこは見えている**
+        if (hits[0].object.name === 'fish') misses++;
+      }
+    }
+    box.geometry.dispose();
+    (box.material as THREE.Material).dispose();
+    rocks.dispose();
+    return misses;
+  }
+
+  for (const stage of STAGES) {
+    for (let i = 0; i < 2; i++) {
+      it(`${stage.id} の岩${i + 1} は、出はじめの魚を1点も見せない`, () => {
+        // **出はじめ（reveal 0）で1画素も見えていないこと。**
+        // ここが 0 でないと、「何もない水の中にぽっと湧く」が戻る
+        expect(occlusionMisses(stage.id, i)).toBe(0);
+      });
+    }
+  }
 });

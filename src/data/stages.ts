@@ -103,8 +103,8 @@ import type { StageConfig } from '../types';
  * ==========================================================================
  */
 const ROCKS = [
-  { id: 'iwa-l', position: [-1.2, 2.55] as const, scale: 1.05, hitRadiusPx: 120 },
-  { id: 'iwa-r', position: [1.2, 2.55] as const, scale: 1.05, hitRadiusPx: 120 },
+  { id: 'iwa-l', position: [-1.2, 2.55] as const, scale: 1.15, hitRadiusPx: 120 },
+  { id: 'iwa-r', position: [1.2, 2.55] as const, scale: 1.15, hitRadiusPx: 120 },
 ];
 
 const HOLES = [
