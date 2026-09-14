@@ -16,7 +16,10 @@
     <title>ぽこ！</title>
   </head>
   <body>
-    <!-- WebGL キャンバス（水たまりと魚） -->
+    <!-- 背景のループ動画（§8-1）。WebGL キャンバスはこの上に透過で重なる -->
+    <div id="background-layer" class="layer" aria-hidden="true"></div>
+
+    <!-- WebGL キャンバス（穴と魚） -->
     <div id="webgl-layer" class="layer"></div>
 
     <!-- 波紋 / UI -->

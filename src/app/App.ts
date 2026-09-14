@@ -21,6 +21,7 @@ import { WakeLock } from '../core/WakeLock';
 import { LIGHTS } from '../data/look';
 import { STAGES, findStage } from '../data/stages';
 import { StageRoot } from '../scene/StageRoot';
+import { VideoLayer } from '../scene/VideoLayer';
 import { ParentalGate } from '../ui/ParentalGate';
 import { Ripple } from '../ui/Ripple';
 import type { StageId } from '../types';
@@ -29,6 +30,8 @@ import type { StageId } from '../types';
 const _hitAt = new THREE.Vector3();
 
 export interface AppElements {
+  /** 背景のループ動画を敷く場所。WebGL キャンバスはこの上に透過で重なる */
+  backgroundLayer: HTMLElement;
   webglLayer: HTMLElement;
   overlayLayer: HTMLElement;
   ripples: HTMLElement;
@@ -43,6 +46,7 @@ export class App {
   private readonly ripple: Ripple;
   private readonly projector: ScreenProjector;
   private readonly gate: ParentalGate;
+  private readonly videoLayer: VideoLayer;
   private readonly audio = new AudioBus();
   private readonly assets = new AssetLoader();
   private readonly wakeLock = new WakeLock();
@@ -81,6 +85,7 @@ export class App {
     this.ripple = new Ripple(elements.ripples);
     this.projector = new ScreenProjector(document.body, this.renderer.camera);
     this.gate = new ParentalGate(elements.uiRoot);
+    this.videoLayer = new VideoLayer(elements.backgroundLayer);
     this.gate.onUnlock(() => {
       // TODO(Phase 7): 音量とステージのリセットを出す
     });
@@ -138,6 +143,8 @@ export class App {
       }
       this.stageRoot = next;
       this.stageId = config.id;
+      // **背景の動画を差し替える**（前のは `setVideo` の中で止めて捨てる）
+      this.videoLayer.setVideo(next.video);
       this.scene.add(next.group);
       next.holes.measure(this.projector, next.fishOffsets());
     } finally {
@@ -159,6 +166,9 @@ export class App {
     this.tapCount++;
     // **音は初期ミュート。最初のタップで解禁する**（不変条件9）
     void this.audio.unlock();
+    // 自動再生が拒否されていたら、ここで動かす（端末によっては
+    // ユーザー操作の前に再生できない。**止まった絵のまま気づかない**のを防ぐ）
+    this.videoLayer.resume();
     this.ripple.spawn(screenX, screenY);
 
     const root = this.stageRoot;
@@ -278,6 +288,26 @@ export class App {
           bump: +a.bump.toFixed(3),
           holeIndex: a.holeIndex,
         })) ?? [],
+      getFishSizes: () => this.stageRoot?.fish.describeSizes() ?? [],
+      getFishDebug: () =>
+        (this.stageRoot?.fish.actors ?? []).map((a) => {
+          const box = new THREE.Box3().setFromObject(a.group);
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          const ws = new THREE.Vector3();
+          a.group.getWorldScale(ws);
+          let childScale = 'none';
+          a.group.traverse((o) => {
+            if (o.name === 'fish.plate' || (o as THREE.Mesh).isMesh) return;
+            if (o !== a.group) childScale = `${o.scale.x.toFixed(3)}`;
+          });
+          return {
+            id: a.config.id,
+            worldSize: [+size.x.toFixed(2), +size.y.toFixed(2), +size.z.toFixed(2)],
+            groupScale: +ws.x.toFixed(3),
+            childScale,
+          };
+        }),
       getHittableCount: () => this.stageRoot?.fish.countHittable() ?? 0,
       getUpSec: () => this.stageRoot?.fish.getUpSec() ?? 0,
       getFishHitCount: () => this.fishHitCount,

@@ -281,3 +281,21 @@ body {
     border-color: rgba(226, 246, 255, 0.5);
   }
 }
+
+
+/**
+ * 背景のループ動画（`scene/VideoLayer.ts`）。
+ *
+ * **画面いっぱいを覆う**（`object-fit: cover`）。縦横比が合わなくても
+ * 帯が出ないようにする。WebGL キャンバスはこの上に透過で重なる。
+ */
+.background-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 幼児が長押しして動画のメニューを出せないようにする（不変条件5） */
+  pointer-events: none;
+  user-select: none;
+}

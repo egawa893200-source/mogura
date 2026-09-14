@@ -84,11 +84,21 @@ export class FishSystem {
   /** 出ている時間。介助（§4-7）が動かす */
   private upSec: number = TIMING.upSec;
 
-  constructor(fish: readonly FishConfig[]) {
+  constructor(
+    fish: readonly FishConfig[],
+    /** 種ごとの `.glb`。無い種は canvas の絵に落ちる（不変条件7） */
+    models: ReadonlyMap<string, THREE.Object3D> = new Map(),
+    /** 種ごとの体の画像 */
+    skins: ReadonlyMap<string, THREE.Texture> = new Map()
+  ) {
     // **1種につき1匹だけ作る。** 同じ魚を同時に2箇所へ出さない決まり（§4-2）
     // なので、これで足りる。毎回作り直すとゴミが出る
     for (const config of fish) {
-      const shape = createProceduralFish(config);
+      const shape = createProceduralFish(
+        config,
+        models.get(config.id) ?? null,
+        skins.get(config.id) ?? null
+      );
       shape.group.visible = false;
       this.group.add(shape.group);
       this.shapes.push(shape);
@@ -130,6 +140,16 @@ export class FishSystem {
   getUpSec(): number {
     return this.upSec;
   }
+
+  /** 開発と E2E 用。魚の見かけの大きさ（ワールド） */
+  describeSizes(): { id: string; width: number; height: number }[] {
+    return this.actors.map((a, i) => ({
+      id: a.config.id,
+      width: +(this.shapes[i]?.width ?? 0).toFixed(3),
+      height: +(this.shapes[i]?.height ?? 0).toFixed(3),
+    }));
+  }
+
 
   /**
    * いま叩ける魚の数。**0 にしてはいけない**（不変条件4c）。

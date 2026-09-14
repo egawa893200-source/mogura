@@ -11,7 +11,7 @@
  * 出どころ: 水族館アプリ「みずのなか」の `src/core/AssetLoader.ts`（647行）。
  * 実機で検証済みなので書き直していない。**水槽専用だった部分だけを外した**:
  *  - コースティクス／水面法線／鱗／餌の粒のテクスチャ生成（水の絵に固有）
- *  - `loadVideo()`（このアプリに実写動画のレイヤーは無い。§5-1 の背景は
+ *  - ~~`loadVideo()`~~ → **戻した**（2026-09-14。背景を実写のループ動画にしたため。§5-1 の背景は
  *    静止画か手続き生成。動画を使うことにしたら、みずのなかから持ってくる）
  * --------------------------------------------------------------------------
  */
@@ -206,6 +206,66 @@ export class AssetLoader {
       warnMissingAsset('モデル', url);
       return null;
     }
+  }
+  /**
+   * 背景のループ動画を読む。無ければ null（手続き生成の背景に落ちる。不変条件7）。
+   *
+   * **出どころ: 水族館アプリ「みずのなか」（suizokukan）の `core/AssetLoader.ts`。**
+   * 実機で検証済みなので書き直さない。
+   *
+   * 拡張子は .mp4 を基本にしつつ、同名の .webm も試す。
+   * 無料素材サイトはどちらかの形式で配っていることが多く、
+   * 「置くだけで使われる」ようにしておきたいため。
+   */
+  async loadVideo(url: string | null): Promise<HTMLVideoElement | null> {
+    if (!url) return null;
+
+    const candidates = [url];
+    if (url.endsWith('.mp4')) candidates.push(`${url.slice(0, -4)}.webm`);
+
+    for (const candidate of candidates) {
+      const video = await this.tryLoadVideo(candidate);
+      if (video) return video;
+    }
+    return null;
+  }
+
+  private tryLoadVideo(url: string): Promise<HTMLVideoElement | null> {
+    return new Promise((resolve) => {
+      const video = document.createElement('video');
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      video.setAttribute('playsinline', '');
+
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        video.oncanplaythrough = null;
+        video.oncanplay = null;
+        video.onerror = null;
+        window.clearTimeout(timer);
+        if (ok) {
+          resolve(video);
+        } else {
+          video.removeAttribute('src');
+          video.load();
+          resolve(null);
+        }
+      };
+
+      video.oncanplaythrough = () => done(true);
+      // 大きい動画では canplaythrough を待つと起動が遅れる。再生開始できれば充分。
+      video.oncanplay = () => done(true);
+      video.onerror = () => done(false);
+      // 5秒で諦める（何も表示されない時間を作らない §9 起動時間）
+      const timer = window.setTimeout(() => done(video.readyState >= 2), 5000);
+
+      video.src = resolveAssetUrl(url);
+      video.load();
+    });
   }
 
   private remember(key: string, tex: AnyTexture): AnyTexture {

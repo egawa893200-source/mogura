@@ -13,6 +13,9 @@
  * --------------------------------------------------------------------------
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 
@@ -49,6 +52,22 @@ describe('ステージと魚のデータ（§5-1 / §5-3）', () => {
         expect(seen.has(id), `${id} が2つのステージに出ている`).toBe(false);
         seen.add(id);
       }
+    }
+  });
+
+  it('同じステージに、同じモデルの魚を2匹置かない', () => {
+    // ==================================================================
+    // **輪郭が同じ2匹が並ぶと、色を変えても「同じ魚を2色に塗った」に見える**
+    // （「ばあ！」で岩とくさむらに判定からそう言われている）。
+    //
+    // 「みずのなか」のモデルは3体しかないので、クマノミのモデルは
+    // **ステージをまたいで**色違いで使い回している（`hagi` と `kumanomi`）。
+    // 子どもが同時に見ることはないので、そこは許す。
+    // **同じステージの中だけは必ず別の輪郭にする。**
+    // ==================================================================
+    for (const stage of STAGES) {
+      const models = stage.fish.map((id) => findFish(id)!.modelUrl ?? id);
+      expect(new Set(models).size, stage.id).toBe(models.length);
     }
   });
 
@@ -567,5 +586,64 @@ describe('出現の抽選（§4-2 / §4-7）', () => {
       b.fish.update(dt);
     }
     expect(a.fish.actors.map((x) => x.holeIndex)).toEqual(b.fish.actors.map((x) => x.holeIndex));
+  });
+});
+
+/**
+ * 3D モデル（2026-09-14。人間の指示で「みずのなか」の魚をそのまま使った）。
+ *
+ * **ここは全部、数値のテストが通っているのに絵が間違っていた項目。**
+ * 撮って見るまで分からなかったので、分かったことを数値に落として残す。
+ */
+describe('3D モデル（§5-1）', () => {
+  it('モデルを使う魚は、ステージの中で同じ .glb を2匹置かない', () => {
+    // **クマノミのモデルを2枠で使い回している**（モデルが3体しかないため）。
+    // 同じ輪郭が並ぶと、色を変えても「同じ魚を2色に塗った」に見える。
+    // ステージをまたぐぶんは、子どもが同時に見ないので許す
+    for (const stage of STAGES) {
+      const models = stage.fish
+        .map((id) => findFish(id)?.modelUrl)
+        .filter((url): url is string => !!url);
+      expect(new Set(models).size, `${stage.id} で同じモデルが2匹`).toBe(models.length);
+    }
+  });
+
+  it('展開図を貼らないモデルには、塗り替える色がある', () => {
+    // **モデルのマテリアル色は、明るい色を指定しても変わらない。**
+    // エイは模型側が暗い青灰で、青い映像の上では**影にしか見えなかった**
+    // （みずのなかが同じ失敗を記録している）。`tintModelGeometry` が
+    // 「陰影はモデル・色は設定」で塗り替えるので、色が要る
+    for (const fish of FISH) {
+      if (!fish.modelUrl || fish.skinUrl) continue;
+      expect(typeof fish.color, `${fish.id} に color が無い`).toBe('number');
+      expect(typeof fish.accent, `${fish.id} に accent が無い`).toBe('number');
+    }
+  });
+
+  it('動画のあるステージは、背景の絵を持たない', () => {
+    // **動画のときは地の板を1枚も置かない**（`StageRoot`）。
+    // 置くと、`<video>` の上に重ねた**透過キャンバスが動画を丸ごと隠す**。
+    // 実際に隠れていて、画面には空のグラデーションしか映っていなかった。
+    // 読み込みも再生も成功している（206 が返る）ので、**動画の側を疑っても
+    // 永遠に見つからない**種類の事故だった
+    for (const stage of STAGES) {
+      if (!stage.videoUrl) continue;
+      expect(stage.backgroundUrl, `${stage.id} に動画と絵の両方がある`).toBeNull();
+    }
+  });
+
+  it('モデルの素材はすべて public/ に実在する', () => {
+    // **素材が無ければ canvas の絵に落ちる**（不変条件7）ので落ちはしないが、
+    // 綴り違いに気づけない。「ばあ！」で `resolveAssetUrl` を通し忘れた話と同じ
+    for (const fish of FISH) {
+      for (const url of [fish.modelUrl, fish.skinUrl]) {
+        if (!url) continue;
+        expect(existsSync(join(process.cwd(), 'public', url)), `${url} が無い`).toBe(true);
+      }
+    }
+    for (const stage of STAGES) {
+      if (!stage.videoUrl) continue;
+      expect(existsSync(join(process.cwd(), 'public', stage.videoUrl)), stage.videoUrl).toBe(true);
+    }
   });
 });

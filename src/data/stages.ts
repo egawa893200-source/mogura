@@ -93,32 +93,35 @@ const HOLES = [
 export const STAGES: readonly StageConfig[] = [
   {
     id: 'ike',
-    label: 'あさせ',
-    // **草原の絵をやめた**（2026-09-14、実機で「背景が野原で魚とマッチして
-    // いない」と言われて）。浅い水の中を手続き生成で描く
+    label: 'かわ',
+    // ==================================================================
+    // **背景は「みずのなか」（suizokukan）の実写ループ動画**
+    // （2026-09-14、人間の指示）。手続き生成の水中の絵から差し替えた。
+    // 動画が読めなければ `waterScene` の絵に落ちる（不変条件7）
+    // ==================================================================
     backgroundUrl: null,
+    videoUrl: '/videos/river.mp4',
     waterScene: { top: '#7fe3e8', bottom: '#17739b', floor: '#d9c98f', seed: 0x51f0a3 },
     sky: ['#7fe3e8', '#17739b'],
-    // 水の中なので空が無い。上限として働く理由がないので高めに取る
     horizonV: 0.4,
     water: ['#a8eef2', '#0f4f6b'],
-    // 岩のくぼみの色。**土の茶色にしない**（水中に土の穴は変）
     bank: ['#6f8f9c', '#4d6a76'],
     holes: HOLES,
-    // **2種だけ。** 体高 0.85 と 0.50 で 0.35 離れている
-    fish: ['kingyo', 'koi'],
+    // **2種だけ。** 輪郭がまったく違う組にする（丸い金魚と細長いハギ）
+    fish: ['kingyo', 'hagi'],
   },
   {
     id: 'umi',
     label: 'うみ',
-    backgroundUrl: '/backgrounds/umi.webp',
+    backgroundUrl: null,
+    videoUrl: '/videos/bigtank.mp4',
+    waterScene: { top: '#5fc2d8', bottom: '#0b3350', floor: '#c9bb8a', seed: 0x77c1e2 },
     sky: ['#3f86b8', '#0d2c46'],
     horizonV: 0.4,
     water: ['#5fc2d8', '#124a63'],
     bank: ['#5d7d8c', '#41616f'],
     holes: HOLES,
-    // **2種だけ。** 体高 0.70 と 0.95 で 0.25 離れている
-    fish: ['kumanomi', 'fugu'],
+    fish: ['kumanomi', 'ei'],
   },
 ];
 

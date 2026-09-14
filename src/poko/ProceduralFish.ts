@@ -21,6 +21,7 @@ import * as THREE from 'three';
 
 import type { FishConfig } from '../types';
 import { createBumpArt, createFishArt } from './FishArt';
+import { buildModelFish } from './ModelFish';
 
 /**
  * 見かけの大きさ（幅 × 高さ の平方根。ワールド）。
@@ -51,9 +52,67 @@ export interface ProceduralFish {
   dispose(): void;
 }
 
-export function createProceduralFish(config: FishConfig): ProceduralFish {
+/**
+ * 魚を1匹作る。
+ *
+ * **モデル（`.glb`）があればそれを使い、無ければ canvas の絵に落ちる**
+ * （不変条件7）。`model` は `AssetLoader.loadModel()` が返したもの。
+ */
+export function createProceduralFish(
+  config: FishConfig,
+  model: THREE.Object3D | null = null,
+  skin: THREE.Texture | null = null
+): ProceduralFish {
   const group = new THREE.Group();
   const disposables: { dispose(): void }[] = [];
+
+  // ======================================================================
+  // **モデルがあればそれを使う**（2026-09-14、人間の指示で
+  // 「みずのなか」の 3D 魚をそのまま使うことにした）。
+  // 無ければ canvas の絵（道A）に落ちる —— **どちらでも遊びは同じ**。
+  // ======================================================================
+  // **モデルから形が取れなければ null が返る**（Mesh が1つも無い .glb）。
+  // そのときは何もしなかったことにして canvas の絵へ落ちる（不変条件7）
+  const built = model ? buildModelFish(model, config, skin) : null;
+  if (built) {
+    group.add(built.group);
+    disposables.push(built);
+    const clip3d = new THREE.Plane(new THREE.Vector3(1, 0, 0), 0);
+    for (const material of built.materials) material.clippingPlanes = [clip3d];
+
+    const bumpArt3d = createBumpArt();
+    const bumpGeo3d = new THREE.PlaneGeometry(built.height * 0.42, built.height * 0.42);
+    const bumpMat3d = new THREE.MeshBasicMaterial({
+      ...(bumpArt3d ? { map: bumpArt3d } : { color: 0xef6a62 }),
+      transparent: true,
+      alphaTest: 0.3,
+      toneMapped: false,
+    });
+    bumpMat3d.clippingPlanes = [clip3d];
+    const bump3d = new THREE.Mesh(bumpGeo3d, bumpMat3d);
+    bump3d.name = 'fish.bump';
+    bump3d.position.set(built.width * 0.14, built.height * 0.5, built.width * 0.25);
+    bump3d.visible = false;
+    group.add(bump3d);
+    disposables.push(bumpGeo3d, bumpMat3d);
+    if (bumpArt3d) disposables.push(bumpArt3d);
+
+    return {
+      group,
+      height: built.height,
+      width: built.width,
+      setClipX(worldX: number) {
+        clip3d.constant = -worldX;
+      },
+      setBump(t: number) {
+        bump3d.visible = t > 0;
+        if (t > 0) bump3d.scale.setScalar(Math.min(1, t * 1.2));
+      },
+      dispose() {
+        for (const item of disposables) item.dispose();
+      },
+    };
+  }
 
   const art = createFishArt(config);
   // 絵の縦横比から板の形を決める。**絵が無いときは体型から決める**

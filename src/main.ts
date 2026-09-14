@@ -16,6 +16,7 @@ function requireEl(id: string): HTMLElement {
 }
 
 const elements: AppElements = {
+  backgroundLayer: requireEl('background-layer'),
   webglLayer: requireEl('webgl-layer'),
   overlayLayer: requireEl('overlay-layer'),
   ripples: requireEl('ripples'),

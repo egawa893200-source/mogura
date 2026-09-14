@@ -41,6 +41,15 @@ export interface StageConfig {
    * もう1枚はここで描く。素材ファイルを増やさずに済む。
    */
   waterScene?: { top: string; bottom: string; floor: string; seed: number };
+  /**
+   * 背景のループ動画（`public/videos/*.mp4`）。
+   *
+   * **「みずのなか」（suizokukan）で実機検証済みのものをそのまま使う**
+   * （2026-09-14、人間の指示）。`<video>` を敷いて、その上に透過した
+   * WebGL キャンバスを重ねる（`scene/VideoLayer.ts`）。
+   * 読めなければ `waterScene` の絵に落ちる（不変条件7）。
+   */
+  videoUrl?: string | null;
   /** 手続き生成の背景（上・下）。絵があるときは使われない */
   sky: readonly [string, string];
   /**
@@ -114,4 +123,26 @@ export interface FishConfig {
   squashStyle: SquashStyle;
   /** 絵を置いたら使う。無ければ手続き生成（不変条件7） */
   cutoutUrl: string | null;
+
+  /* ---- 3D モデル（「みずのなか」から持ってきた `.glb`）------------------- */
+
+  /**
+   * `public/models/*.glb`。**読めなければ canvas の絵に落ちる**（不変条件7）。
+   * 2026-09-14、人間の指示で suizokukan のモデルを使うことにした。
+   */
+  modelUrl?: string | null;
+  /** 体に貼る画像。無ければモデルの材質のまま */
+  skinUrl?: string | null;
+  /**
+   * **頭が -z を向いているモデルは true**（みずのなかの実測）。
+   * **自動判定はしない** —— 誤るのでやめた、と向こうで結論が出ている。
+   */
+  modelFlip?: boolean;
+  /**
+   * 体軸まわりの向き［度］。**背が上を向くかはモデルごとに違う。**
+   * 琉金は 90 が要り、入れないと横倒しで泳いだ（みずのなかの実測）。
+   */
+  modelRollDeg?: number;
+  /** 体長の倍率。1 が既定（他の魚と同じ長さ） */
+  modelScale?: number;
 }
