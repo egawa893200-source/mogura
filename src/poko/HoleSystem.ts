@@ -154,7 +154,26 @@ export class HoleSystem {
     return best;
   }
 
-  /** 開発と E2E 用。画面座標と半径を読み出す */
+  /** 画面に映っているか */
+  isOnScreen(index: number): boolean {
+    return this.onScreen[index] === true;
+  }
+
+  /** 画面座標の x。**配列を作らない**（毎フレーム読まれる。§10-3） */
+  screenXAt(index: number): number {
+    return this.sx[index] ?? 0;
+  }
+
+  /** 画面座標の y。同上 */
+  screenYAt(index: number): number {
+    return this.sy[index] ?? 0;
+  }
+
+  get count(): number {
+    return this.runtimes.length;
+  }
+
+  /** 開発と E2E 用。**毎フレーム呼ばないこと**（配列と object を作る） */
   describe(): { id: string; x: number; y: number; radiusPx: number }[] {
     return this.runtimes.map((runtime, i) => ({
       id: runtime.config.id,

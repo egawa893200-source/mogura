@@ -77,6 +77,24 @@ export interface StageConfig {
   holes: readonly HoleConfig[];
   /** このステージに出る魚。**2種だけ**（§5-1） */
   fish: readonly string[];
+  /**
+   * 画面の上に置く岩（§4-8。2026-09-14、人間が決めた）。
+   *
+   * 「画面の上が空いているので岩を設置して、タップすると魚が前に
+   * 突き出してくるように（ばあっ！）」。**「みずのなか」の岩陰のばあ**
+   * （`creatures/HideoutSystem.ts`）を持ってきたもの。
+   *
+   * **空でもよい**（岩を置かなくてもアプリは成り立つ）。
+   */
+  rocks?: readonly RockConfig[];
+  /**
+   * 岩に住んでいる魚の id。
+   *
+   * **水たまりの2種とは別の種にすること。** 同じ種を使うと
+   * 「同じ魚が同時に2箇所に出る」（§4-2 が禁じている）。
+   * 岩が無いステージでは使われない。
+   */
+  rockFish?: string;
 }
 
 export interface HoleConfig {
@@ -88,6 +106,27 @@ export interface HoleConfig {
    * `HoleSystem.radiusAt()` が隣との距離を見て縮める（§3-3）。
    * **下限は設けない** —— 下限が効いた瞬間に円が重なって
    * 「押したのに隣が反応する」が復活する
+   */
+  hitRadiusPx: number;
+}
+
+export interface RockConfig {
+  id: string;
+  /**
+   * ワールド座標の x, y。**魚が出てくる場所であり、当たり判定の中心**。
+   *
+   * 岩の塊そのものはこれより上に置く（`RockSystem` が `LIFT` だけ持ち上げる）。
+   * **岩の中心を当たり判定にしない** —— 岩は画面の上端で切れるように
+   * 大きく置いてあるので、中心は画面の外に近く、指が届かない
+   */
+  position: readonly [number, number];
+  /** 岩の見かけの半径（ワールド） */
+  scale: number;
+  /**
+   * 当たり判定の半径（px）。**これは上限**で、実際は
+   * `RockSystem.radiusAt()` が隣の岩と**水たまり**との距離を見て縮める。
+   * 水たまりまで見るのは、上の段の水たまりと円が重なると
+   * 「押したのに隣が反応する」が起きるため（§3-3 と同じ話）
    */
   hitRadiusPx: number;
 }

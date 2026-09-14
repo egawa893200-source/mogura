@@ -21,11 +21,45 @@ import { describe, expect, it } from 'vitest';
 
 import { FISH, SPARE_FISH, findFish } from '../../src/data/fish';
 import { STAGES, findStage } from '../../src/data/stages';
-import { ASSIST, MAX_UP_FISH, TIMING } from '../../src/data/timing';
+import { ASSIST, MAX_UP_FISH, ROCK_TIMING, TIMING } from '../../src/data/timing';
 import { FishSystem } from '../../src/poko/FishSystem';
 import { HoleSystem } from '../../src/poko/HoleSystem';
+import { RockSystem } from '../../src/poko/RockSystem';
 import { Spawner } from '../../src/poko/Spawner';
 import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
+
+/**
+ * 端末4種。**当たり判定の円が重ならないことを見る**ときに使う。
+ *
+ * **半径は定数では決められない**（「ばあ！」の実測）。ワールド座標を固定した
+ * まま画面の大きさだけ変わるので、どんな定数を選んでも全端末では成立しない。
+ * `radiusAt()` が隣との距離を見て縮めているかを、数値にして見張る。
+ *
+ * カメラは「ばあ！」と同じ `(0, 0.3, 7.2)` 固定・fov 66°。
+ */
+const DEVICES: [string, number, number][] = [
+  ['Pixel 7', 412, 839],
+  ['iPhone 12', 390, 750],
+  ['小さい端末', 360, 600],
+  ['横持ち', 844, 390],
+];
+
+function project(width: number, height: number) {
+  const camera = new THREE.PerspectiveCamera(66, width / height, 0.1, 100);
+  camera.position.set(0, 0.3, 7.2);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld(true);
+  const v = new THREE.Vector3();
+  return {
+    project(world: THREE.Vector3, out: { x: number; y: number }): boolean {
+      v.copy(world).project(camera);
+      if (v.z > 1) return false;
+      out.x = ((v.x + 1) / 2) * width;
+      out.y = ((1 - v.y) / 2) * height;
+      return true;
+    },
+  };
+}
 
 describe('ステージと魚のデータ（§5-1 / §5-3）', () => {
   it('ステージは2つ', () => {
@@ -179,30 +213,6 @@ describe('当たり判定（§3-3）', () => {
    * カメラは「ばあ！」と同じ `(0, 0.3, 7.2)` 固定・fov 66°。
    * ==========================================================================
    */
-  const DEVICES: [string, number, number][] = [
-    ['Pixel 7', 412, 839],
-    ['iPhone 12', 390, 750],
-    ['小さい端末', 360, 600],
-    ['横持ち', 844, 390],
-  ];
-
-  function project(width: number, height: number) {
-    const camera = new THREE.PerspectiveCamera(66, width / height, 0.1, 100);
-    camera.position.set(0, 0.3, 7.2);
-    camera.lookAt(0, 0, 0);
-    camera.updateMatrixWorld(true);
-    const v = new THREE.Vector3();
-    return {
-      project(world: THREE.Vector3, out: { x: number; y: number }): boolean {
-        v.copy(world).project(camera);
-        if (v.z > 1) return false;
-        out.x = ((v.x + 1) / 2) * width;
-        out.y = ((1 - v.y) / 2) * height;
-        return true;
-      },
-    };
-  }
-
   for (const [name, width, height] of DEVICES) {
     it(`${name} ${width}×${height} で円が重ならない`, () => {
       for (const stage of STAGES) {
@@ -644,6 +654,210 @@ describe('3D モデル（§5-1）', () => {
     for (const stage of STAGES) {
       if (!stage.videoUrl) continue;
       expect(existsSync(join(process.cwd(), 'public', stage.videoUrl)), stage.videoUrl).toBe(true);
+    }
+  });
+});
+
+/**
+ * 岩陰のばあ（§4-8。2026-09-14、人間が決めた）。
+ *
+ * 「画面の上が空いているので岩を設置して、タップすると魚が前に
+ * 突き出してくるように（ばあっ！）」。
+ * **「みずのなか」の `HideoutSystem` から持ってきたが、3箇所変えてある** ——
+ * どれもこのアプリの不変条件のため。ここで数値にして見張る。
+ */
+describe('岩陰のばあ（§4-8）', () => {
+  function rocksOf(stageId: string) {
+    const stage = findStage(stageId)!;
+    return new RockSystem(stage, stage.rockFish ? findFish(stage.rockFish) : null);
+  }
+
+  it('どのステージにも岩が2つある', () => {
+    for (const stage of STAGES) {
+      expect(stage.rocks?.length, stage.id).toBe(2);
+    }
+  });
+
+  it('岩の魚は、そのステージの水たまりに出ない種', () => {
+    // **同じ種を使うと「同じ魚が同時に2箇所に出る」**（§4-2 が禁じている）。
+    // 岩の魚は `FishSystem` のスロットを使わない別の1匹なので、
+    // 同じ種を指定すると本当に2匹が同時に出る
+    for (const stage of STAGES) {
+      if (!stage.rockFish) continue;
+      expect(findFish(stage.rockFish), stage.id).not.toBeNull();
+      expect(stage.fish, stage.id).not.toContain(stage.rockFish);
+    }
+  });
+
+  it('岩の魚も入れて、ステージの中で同じ .glb を2匹置かない', () => {
+    // 水たまり2匹＋岩1匹の3匹で見る。輪郭が同じ2匹が居ると、
+    // 色を変えても「同じ魚を2色に塗った」に見える
+    for (const stage of STAGES) {
+      const ids = [...stage.fish, ...(stage.rockFish ? [stage.rockFish] : [])];
+      const models = ids.map((id) => findFish(id)?.modelUrl).filter((u): u is string => !!u);
+      expect(new Set(models).size, `${stage.id} で同じモデルが2匹`).toBe(models.length);
+    }
+  });
+
+  it('押すまで、魚は1画素も見えていない（人間の指定）', () => {
+    // 「**何も見えない状態で『ばあっ』と言って出てくる**」（2026-09-13）。
+    // みずのなかは尻尾を岩から覗かせているが、ここでは消す
+    const rocks = rocksOf('ike');
+    expect(rocks.state).toBe('hidden');
+    expect(rocks.fish?.group.visible).toBe(false);
+  });
+
+  it('「ばあっ」の 0.38秒は、声だけで姿が出ない', () => {
+    const rocks = rocksOf('ike');
+    expect(rocks.tap(0)).toBe('baa');
+    expect(rocks.state).toBe('calling');
+    // `callSec` に届くまでは 1画素も出さない
+    for (let i = 0; i < Math.floor(ROCK_TIMING.callSec * 60) - 1; i++) {
+      rocks.update(1 / 60);
+      expect(rocks.state, `${i}フレーム目`).toBe('calling');
+      expect(rocks.reveal).toBe(0);
+      expect(rocks.fish?.group.visible).toBe(false);
+    }
+  });
+
+  it('前に突き出してくる（z がカメラ側へ動く）', () => {
+    // 「**魚が前に突き出してくるように**」（人間の指示）。
+    // 上下や左右ではなく、奥から手前へ出る
+    const rocks = rocksOf('ike');
+    rocks.tap(0);
+    let last = -Infinity;
+    for (let i = 0; i < 300; i++) {
+      rocks.update(1 / 60);
+      if (rocks.state !== 'popping') continue;
+      const z = rocks.fish!.group.position.z;
+      expect(z, `${i}フレーム目で z が戻った`).toBeGreaterThan(last);
+      last = z;
+    }
+    // 出きったところではカメラ側（z > 0）に来ている
+    expect(last).toBeGreaterThan(0.5);
+  });
+
+  it('叩いたその場で潰れる（§4-3 の0フレーム原則）', () => {
+    const rocks = rocksOf('ike');
+    rocks.tap(0);
+    while (rocks.state !== 'out') rocks.update(1 / 60);
+    expect(rocks.tap(0)).toBe('hit');
+    // **`update()` を待たない**
+    expect(rocks.squash).toBeGreaterThan(0);
+    expect(rocks.bump).toBeGreaterThan(0);
+  });
+
+  it('引っ込む途中に押しても、もう一度出てくる（不変条件2）', () => {
+    // ==================================================================
+    // **みずのなかから変えたところ。**
+    // 向こうは `retreating` 中と `cooldown` 中のタップを捨てていたが、
+    // それは「アニメーション中だから無視」そのもので、この app では禁止。
+    // 向こうの貝がまさにそれで壊れている（連打すると 0.45秒の開閉が
+    // 一度も完了せず、開き量の最大が 0.037 だった）
+    // ==================================================================
+    const rocks = rocksOf('ike');
+    rocks.tap(0);
+    while (rocks.state !== 'retreating') rocks.update(1 / 60);
+    expect(rocks.tap(0)).toBe('baa');
+    expect(rocks.state).toBe('calling');
+  });
+
+  it('連打しても、出きるところまで必ず進む（不変条件2）', () => {
+    // 「連打しても壊れない」は「**連打しても動く**」まで確かめること。
+    // 押すたびに `calling` へ戻すので、**押し続けると永遠に出ない**形に
+    // なっていないかを見る（みずのなかの貝と同じ壊れ方）
+    const rocks = rocksOf('ike');
+    let maxReveal = 0;
+    for (let i = 0; i < 600; i++) {
+      // 4フレームに1回押す（1歳半の連打より速い）
+      if (i % 4 === 0) rocks.tap(0);
+      rocks.update(1 / 60);
+      maxReveal = Math.max(maxReveal, rocks.reveal);
+    }
+    // **0.037 になっていないこと。** 押すたびに `calling` へ戻るので
+    // 1 には届かないが、姿は必ず出る
+    expect(maxReveal).toBeGreaterThan(0.5);
+  });
+
+  it('魚が出ている岩ともう一方の岩を、取り違えない', () => {
+    // 岩は2つあるが魚は1匹。**押した岩から出る**。
+    // 出ているあいだにもう一方を押しても、そこには居ない（空振り）
+    const rocks = rocksOf('ike');
+    rocks.tap(1);
+    while (rocks.state !== 'out') rocks.update(1 / 60);
+    expect(rocks.rockIndex).toBe(1);
+    expect(rocks.tap(0)).toBe('empty');
+    // **空振りでも揺れは返る**（不変条件1・3b）
+    expect(rocks.runtimes[0].shake).toBeGreaterThan(0);
+    // 出ている魚は消えない
+    expect(rocks.state).toBe('out');
+  });
+
+  for (const [name, width, height] of DEVICES) {
+    it(`${name} ${width}×${height} で、岩の円が水たまりの円に食い込まない`, () => {
+      // ==================================================================
+      // **岩は水たまりとは別の当たり判定**なので、`HoleSystem.radiusAt()` は
+      // 岩を見ていない。食い込むと「押したのに隣が反応する」が起きる
+      // （みずのなかの貝と岩で実際に起きた）。`RockSystem.radiusAt()` が
+      // 水たまりの円を受け取って縮めているかを、ここで数値にする
+      // ==================================================================
+      for (const stage of STAGES) {
+        const holes = new HoleSystem(stage);
+        const p = project(width, height);
+        holes.measure(p);
+        const rocks = new RockSystem(stage, null);
+        rocks.measure(p, holes);
+
+        const spots = holes.describe();
+        const iwa = rocks.describe();
+        for (const rock of iwa) {
+          for (const spot of spots) {
+            const d = Math.hypot(rock.x - spot.x, rock.y - spot.y);
+            expect(
+              rock.radiusPx + spot.radiusPx,
+              `${stage.id} ${rock.id}-${spot.id}`
+            ).toBeLessThanOrEqual(d);
+          }
+        }
+        for (let i = 0; i < iwa.length; i++) {
+          for (let j = i + 1; j < iwa.length; j++) {
+            const d = Math.hypot(iwa[i].x - iwa[j].x, iwa[i].y - iwa[j].y);
+            expect(iwa[i].radiusPx + iwa[j].radiusPx, `${stage.id} 岩どうし`).toBeLessThanOrEqual(d);
+          }
+        }
+      }
+    });
+  }
+
+  it('実機（Pixel 7 / iPhone 12）の縦持ちで、岩も 70px を下回らない', () => {
+    // 水たまりと同じ基準（§5-3）。**下限を設けて広げるのではない** ——
+    // 狭すぎたら岩の位置のほうを直す
+    for (const [name, width, height] of DEVICES.slice(0, 2)) {
+      for (const stage of STAGES) {
+        const holes = new HoleSystem(stage);
+        const p = project(width, height);
+        holes.measure(p);
+        const rocks = new RockSystem(stage, null);
+        rocks.measure(p, holes);
+        for (const rock of rocks.describe()) {
+          expect(rock.radiusPx, `${name} ${stage.id}/${rock.id}`).toBeGreaterThanOrEqual(70);
+        }
+      }
+    }
+  });
+
+  it('岩は画面の中に入っている', () => {
+    // **「置いたのに見えない」ときは、まず画面に入っているかを疑う**
+    // （「ばあ！」で飾りを x = ±5.2 に並べて 9株のうち4株が画面の外だった）
+    for (const stage of STAGES) {
+      const rocks = new RockSystem(stage, null);
+      rocks.measure(project(412, 839), null);
+      for (const rock of rocks.describe()) {
+        expect(rock.x, `${stage.id}/${rock.id} x`).toBeGreaterThan(0);
+        expect(rock.x, `${stage.id}/${rock.id} x`).toBeLessThan(412);
+        expect(rock.y, `${stage.id}/${rock.id} y`).toBeGreaterThan(0);
+        expect(rock.y, `${stage.id}/${rock.id} y`).toBeLessThan(839);
+      }
     }
   });
 });

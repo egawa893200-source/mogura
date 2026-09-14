@@ -15,6 +15,7 @@ import { findFish } from '../data/fish';
 import { FishSystem } from '../poko/FishSystem';
 import { HitEffect } from '../poko/HitEffect';
 import { HoleSystem } from '../poko/HoleSystem';
+import { RockSystem } from '../poko/RockSystem';
 import { Spawner, seededRandom } from '../poko/Spawner';
 import { createWaterShape, type WaterShape } from '../poko/WaterShape';
 import type { StageConfig } from '../types';
@@ -25,6 +26,8 @@ export class StageRoot {
   readonly group = new THREE.Group();
   readonly holes: HoleSystem;
   readonly fish: FishSystem;
+  /** 岩陰のばあ（§4-8）。岩を置いていないステージでは中身が空 */
+  readonly rocks: RockSystem;
   readonly spawner: Spawner;
   readonly effect: HitEffect;
   /** しぶきの散りかた。**遊びの乱数は独立したシードから引く**（§4-2） */
@@ -39,6 +42,7 @@ export class StageRoot {
     readonly config: StageConfig,
     holes: HoleSystem,
     fish: FishSystem,
+    rocks: RockSystem,
     spawner: Spawner,
     effect: HitEffect,
     waters: WaterShape[],
@@ -48,6 +52,7 @@ export class StageRoot {
   ) {
     this.holes = holes;
     this.fish = fish;
+    this.rocks = rocks;
     this.spawner = spawner;
     this.effect = effect;
     this.waters = waters;
@@ -55,6 +60,9 @@ export class StageRoot {
     this.disposables = disposables;
     for (const part of parts) this.group.add(part);
     this.group.add(holes.group);
+    // 岩は水たまりと同じ層。**魚は岩より手前（+z）へ突き出す**ので、
+    // ここで前後を分ける必要は無い
+    this.group.add(rocks.group);
     // しぶきは**水たまりより手前**。奥だと水面に隠れて1粒も見えない
     // （「ばあ！」で足あとを置いて見えなかったのと同じ失敗）
     this.effect.group.position.z = 0.3;
@@ -157,6 +165,11 @@ export class StageRoot {
     // さかな。**1種につき1匹だけ作る**（同じ魚を同時に2箇所へ出さないので足りる）。
     // **素材が無くても手続き生成で必ず作れる**（不変条件7）
     const configs = config.fish.map(findFish).filter((f): f is NonNullable<typeof f> => f !== null);
+    // 岩に住んでいる魚（§4-8）。**水たまりの2種とは別の種**（`data/stages.ts`）
+    const rockFishConfig = config.rockFish ? findFish(config.rockFish) : null;
+    // **同じ読み込みの列に混ぜる。** 別に読むと、岩の魚だけ
+    // `resolveAssetUrl()` を通し忘れる形になりやすい（CLAUDE.md）
+    const loadTargets = rockFishConfig ? [...configs, rockFishConfig] : configs;
     // ==================================================================
     // **モデルと体の画像を先に読む**（2026-09-14、人間の指示で
     // 「みずのなか」の 3D 魚を使うことにした）。
@@ -167,7 +180,7 @@ export class StageRoot {
     const models = new Map<string, THREE.Object3D>();
     const skins = new Map<string, THREE.Texture>();
     await Promise.all(
-      configs.map(async (f) => {
+      loadTargets.map(async (f) => {
         const [model, skin] = await Promise.all([
           assets.loadModel(f.modelUrl ?? null),
           f.skinUrl ? assets.loadOptionalTexture(f.skinUrl) : Promise.resolve(null),
@@ -177,6 +190,13 @@ export class StageRoot {
       })
     );
     const fish = new FishSystem(configs, models, skins);
+    // 岩陰のばあ（§4-8）。**岩が無いステージでも必ず作る**（中身が空になるだけ）
+    const rocks = new RockSystem(
+      config,
+      rockFishConfig,
+      rockFishConfig ? (models.get(rockFishConfig.id) ?? null) : null,
+      rockFishConfig ? (skins.get(rockFishConfig.id) ?? null) : null
+    );
     // 魚は水たまりの子にする。水面（z = 0）より奥（`FISH_Z`）に置くので、
     // 沈んでいるあいだは水に隠れる
     for (const actor of fish.actors) holes.runtimes[0].group.add(actor.group);
@@ -184,7 +204,9 @@ export class StageRoot {
     // しぶきは水の色。**白い粒にしない**（うみ では背景に溶ける）
     const effect = new HitEffect(config.water[0]);
 
-    const root = new StageRoot(config, holes, fish, spawner, effect, waters, ambient, parts, disposables);
+    const root = new StageRoot(
+      config, holes, fish, rocks, spawner, effect, waters, ambient, parts, disposables
+    );
     root.video = video;
     return root;
   }
@@ -212,6 +234,8 @@ export class StageRoot {
     for (const water of this.waters) water.update(elapsed);
     this.spawner.update(dt, this.fish);
     this.fish.update(dt);
+    // 岩陰のばあ（§4-8）。**抽選はしない** —— 押したときだけ出る
+    this.rocks.update(dt);
     this.effect.update(
       dt,
       this.holes.runtimes.map((r) => r.group)
@@ -231,6 +255,7 @@ export class StageRoot {
   dispose(): void {
     this.effect.dispose();
     this.fish.dispose();
+    this.rocks.dispose();
     for (const water of this.waters) water.dispose();
     for (const item of this.disposables) item.dispose();
   }

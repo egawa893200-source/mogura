@@ -43,6 +43,18 @@ declare global {
         textures: number;
       };
       reloadStage(): Promise<void>;
+      getRocks(): { id: string; x: number; y: number; radiusPx: number }[];
+      getRockTapCount(): number;
+      getRockFish(): {
+        id: string | null;
+        state: string;
+        reveal: number;
+        squash: number;
+        bump: number;
+        rockIndex: number;
+        visible: boolean;
+        z: number;
+      } | null;
     };
   }
 }
@@ -457,6 +469,124 @@ test.describe('骨組み（Phase 1）', () => {
       Math.max(...window.__poko.getFish().map((f) => f.bump))
     );
     expect(bump).toBeGreaterThan(0);
+  });
+
+  test('岩を押すと、何も見えないまま「ばあっ」と鳴って魚が出る（§4-8）', async ({ page }) => {
+    // ==================================================================
+    // 「画面の上が空いているので岩を設置して、タップすると魚が前に
+    // 突き出してくるように（ばあっ！）」（2026-09-14、人間の指示）。
+    //
+    // **姿より先に声。** 実機で「『ばあっ』する前にチラッと見えている」と
+    // 言われた指摘は、岩にもそのまま当てはまる
+    // ==================================================================
+    await boot(page);
+    const rocks = await page.evaluate(() => window.__poko.getRocks());
+    expect(rocks.length).toBe(2);
+
+    const before = await page.evaluate(() => window.__poko.getVoiceLog().length);
+    await page.mouse.click(rocks[1].x, rocks[1].y);
+
+    // `calling` のあいだ、魚は1画素も描かれていない
+    const leaked = await page.evaluate(async () => {
+      let frames = 0;
+      let bad = 0;
+      while (window.__poko.getRockFish()?.state === 'calling') {
+        frames++;
+        const f = window.__poko.getRockFish()!;
+        if (f.visible || f.reveal > 0) bad++;
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return { frames, bad };
+    });
+    expect(leaked.frames).toBeGreaterThan(0);
+    expect(leaked.bad).toBe(0);
+
+    // 出きるところまで進む（**待つのは更新時計**）
+    await page.waitForFunction(() => window.__poko.getRockFish()?.state === 'out', null, {
+      timeout: 60_000,
+    });
+    const out = await page.evaluate(() => window.__poko.getRockFish()!);
+    expect(out.visible).toBe(true);
+    // **前に突き出してくる**（カメラ側 = z > 0）
+    expect(out.z).toBeGreaterThan(0.5);
+    // 「ばあっ！」が鳴っている
+    const log = await page.evaluate(() => window.__poko.getVoiceLog());
+    expect(log.slice(before).some((v) => v.clip === 'baa')).toBe(true);
+  });
+
+  test('岩の当たり判定が、水たまりの当たり判定と重ならない（§4-8）', async ({ page }) => {
+    // **実際の画面で測る。** 単体テストは自前のカメラで測っているので、
+    // レンダラ側の fov やアスペクトの扱いがずれていると気づけない
+    await boot(page);
+    const { rocks, holes } = await page.evaluate(() => ({
+      rocks: window.__poko.getRocks(),
+      holes: window.__poko.getHoles(),
+    }));
+    for (const rock of rocks) {
+      expect(rock.radiusPx, rock.id).toBeGreaterThan(0);
+      for (const hole of holes) {
+        const d = Math.hypot(rock.x - hole.x, rock.y - hole.y);
+        expect(rock.radiusPx + hole.radiusPx, `${rock.id}-${hole.id}`).toBeLessThanOrEqual(d);
+      }
+    }
+  });
+
+  test('岩を連打しても、毎回反応が返る（不変条件2）', async ({ page }) => {
+    // **「アニメーション中だから無視」は禁止。** みずのなかの岩陰は
+    // `retreating` 中と `cooldown` 中のタップを捨てていたので、そこを外してある
+    await boot(page);
+    const rocks = await page.evaluate(() => window.__poko.getRocks());
+    const before = await page.evaluate(() => window.__poko.getRockTapCount());
+    for (let i = 0; i < 8; i++) await page.mouse.click(rocks[0].x, rocks[0].y);
+    const after = await page.evaluate(() => window.__poko.getRockTapCount());
+    expect(after).toBe(before + 8);
+    // **連打しても姿が出る**（押すたびに戻して永遠に出ない、にならない）
+    const maxReveal = await page.evaluate(async () => {
+      let best = 0;
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 3) {
+        best = Math.max(best, window.__poko.getRockFish()?.reveal ?? 0);
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return best;
+    });
+    expect(maxReveal).toBeGreaterThan(0.5);
+  });
+
+  test('出ている岩の魚を叩くと、その場で潰れて「いてっ」と言う（§4-8）', async ({ page }) => {
+    await boot(page);
+    const rocks = await page.evaluate(() => window.__poko.getRocks());
+    await page.mouse.click(rocks[0].x, rocks[0].y);
+    await page.waitForFunction(() => window.__poko.getRockFish()?.state === 'out', null, {
+      timeout: 60_000,
+    });
+    const before = await page.evaluate(() => window.__poko.getVoiceLog().length);
+    await page.mouse.click(rocks[0].x, rocks[0].y);
+    // **潰れは `update()` を待たない**（§4-3 の0フレーム原則）
+    const hit = await page.evaluate(() => window.__poko.getRockFish()!);
+    expect(hit.state).toBe('hit');
+    expect(hit.squash).toBeGreaterThan(0);
+
+    // ==================================================================
+    // **たんこぶは潰れより 0.06秒 遅れて育つ**（§4-4「潰れきってから膨らむ」）。
+    // ここを「叩いた直後に 0 より大きい」で見てはいけない ——
+    // クリックと読み出しのあいだに1フレーム入ると、`update()` が
+    // `max(0, (elapsed - 0.06) / 0.16)` を書くので **0 に戻る**。
+    // 実際にそれで落ちた（2026-09-14）。**仕様どおりの 0 だった。**
+    // 見るべきは「潰れているあいだに膨らむこと」なので、そこを見る
+    // ==================================================================
+    const maxBump = await page.evaluate(async () => {
+      let best = 0;
+      while (window.__poko.getRockFish()?.state === 'hit') {
+        best = Math.max(best, window.__poko.getRockFish()!.bump);
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return best;
+    });
+    expect(maxBump).toBeGreaterThan(0);
+
+    const log = await page.evaluate(() => window.__poko.getVoiceLog());
+    expect(log.slice(before).some((v) => v.clip === 'ite')).toBe(true);
   });
 
   test('素材が1つも無くても起動して、どこを押しても反応が返る（不変条件7）', async ({ page }) => {

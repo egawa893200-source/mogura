@@ -71,6 +71,10 @@ export class App {
   private lastVoiceAt = -1;
   /** どの魚が `calling` に入ったかを覚えておく（入った瞬間だけ鳴らす） */
   private readonly wasCalling: boolean[] = [];
+  /** 岩の魚が `calling` に入った瞬間を拾うため（§4-8） */
+  private wasRockCalling = false;
+  /** 岩を押した回数。E2E が「押したら必ず反応する」を見る */
+  private rockTapCount = 0;
 
   constructor(elements: AppElements) {
     this.renderer = new Renderer(elements.webglLayer);
@@ -112,6 +116,9 @@ export class App {
       // **画面座標は毎フレーム測り直す。** 画面の向きが変わると全部ずれる
       // **当たり判定の中心を、いま魚が居るところに合わせる**
       this.stageRoot?.holes.measure(this.projector, this.stageRoot.fishOffsets());
+      // **岩は水たまりの円を測ったあとに測る。** 岩の当たり判定は
+      // 水たまりの円に食い込まないところまで縮むので、先に水たまりが要る
+      this.stageRoot?.rocks.measure(this.projector, this.stageRoot.holes);
       // **更新時計を渡す。壁時計を読まない**（§11-4）
       this.stageRoot?.update(ctx.dt, this.loop.simulatedSeconds);
       this.speakOnRise();
@@ -173,8 +180,22 @@ export class App {
 
     const root = this.stageRoot;
     const hole = root?.holes.pick(screenX, screenY) ?? null;
+
+    // ==================================================================
+    // **岩を先に見る**（§4-8）。岩の円は水たまりの円に食い込まないよう
+    // 縮めてあるので、両方に当たることは無い。それでも順番を決めておくのは、
+    // 丸め誤差で境界にちょうど乗ったときのため
+    // ==================================================================
+    if (root && !hole) {
+      const rockIndex = root.rocks.pick(screenX, screenY);
+      if (rockIndex >= 0) {
+        this.onRockTap(root, rockIndex);
+        return;
+      }
+    }
+
     if (!root || !hole) {
-      // 水たまりでも何でもないところ。**波紋と音だけ**（不変条件1）
+      // 水たまりでも岩でもないところ。**波紋と音だけ**（不変条件1）
       this.audio.playOneShot('plop');
       return;
     }
@@ -220,6 +241,42 @@ export class App {
   }
 
   /**
+   * 岩を押した（§4-8）。**必ず何かを返す**（不変条件1）。
+   *
+   * ========================================================================
+   * **0フレーム原則**（§4-3）。`RockSystem.tap()` の中で揺れと潰れが始まり、
+   * 音もここで鳴る。**次の更新を待たない。**
+   *
+   * 「ばあっ！」だけは `speakOnRise()` が鳴らす —— `calling`（0.38秒）を
+   * 挟んで、**姿が1画素も見えないうちに**声を先に出すため。
+   * ここで鳴らすと水たまりの魚と順番が変わる。
+   * ========================================================================
+   */
+  private onRockTap(root: StageRoot, rockIndex: number): void {
+    this.rockTapCount++;
+    const result = root.rocks.tap(rockIndex);
+    const rock = root.rocks.runtimes[rockIndex];
+    _hitAt.copy(rock.worldPosition);
+
+    if (result === 'hit') {
+      this.fishHitCount++;
+      this.audio.playOneShot('plop');
+      // **「いてっ」は当たった合図**（§4-4。`speak()` を通さない）
+      this.audio.playVoice('ite');
+      this.voiceLog.push({ clip: 'ite', at: this.loop.simulatedSeconds });
+      // しぶきとハンマーは**魚が出ている手前**に出す
+      root.effect.splash(_hitAt, true, root.rng);
+      root.effect.hammer(_hitAt);
+      return;
+    }
+
+    // 空振りと、出はじめの合図。**声は出さない**（§4-5。外れを失敗にしないし、
+    // 「ばあっ」は `speakOnRise()` の役目）
+    this.audio.playOneShot(result === 'baa' ? 'plop' : 'bubble');
+    root.effect.splash(_hitAt, false, root.rng);
+  }
+
+  /**
    * 魚が出てくる**前**に「ばあっ！」と言う（§4-4）。
    *
    * ========================================================================
@@ -252,6 +309,14 @@ export class App {
       }
       this.wasCalling[i] = calling;
     }
+
+    // **岩の魚も同じ列に並べる**（§4-8）。別に鳴らすと、水たまりの魚と
+    // 同じフレームで重なる（`voiceBusyUntil` に任せると片方が落ちる）
+    const rockCalling = root.rocks.state === 'calling';
+    if (rockCalling && !this.wasRockCalling) {
+      this.pendingBaa.push({ actor: -1, at: now + this.pendingBaa.length * 0.12 });
+    }
+    this.wasRockCalling = rockCalling;
 
     // ==================================================================
     // **前の声から 0.12秒は空ける。**
@@ -309,6 +374,24 @@ export class App {
           };
         }),
       getHittableCount: () => this.stageRoot?.fish.countHittable() ?? 0,
+      /** 岩（§4-8）。画面座標と当たり半径。**水たまりと重ならない**ことを見る */
+      getRocks: () => this.stageRoot?.rocks.describe() ?? [],
+      getRockTapCount: () => this.rockTapCount,
+      /** 岩の魚の様子。E2E が「ばあっ の時点で見えていない」を見る */
+      getRockFish: () => {
+        const rocks = this.stageRoot?.rocks;
+        if (!rocks) return null;
+        return {
+          id: rocks.fishConfig?.id ?? null,
+          state: rocks.state,
+          reveal: +rocks.reveal.toFixed(3),
+          squash: +rocks.squash.toFixed(3),
+          bump: +rocks.bump.toFixed(3),
+          rockIndex: rocks.rockIndex,
+          visible: rocks.fish?.group.visible ?? false,
+          z: +(rocks.fish?.group.position.z ?? 0).toFixed(3),
+        };
+      },
       getUpSec: () => this.stageRoot?.fish.getUpSec() ?? 0,
       getFishHitCount: () => this.fishHitCount,
       getMissCount: () => this.missCount,
