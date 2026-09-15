@@ -55,10 +55,26 @@ export default defineConfig({
       workbox: {
         // アプリ本体は全てプリキャッシュする（機内モードでも起動する）
         globPatterns: ['**/*.{js,css,html,png,svg,webmanifest}'],
-        // モデル・音・背景は大きいので、実際に見た場面のぶんだけ後からキャッシュする
+        // ==============================================================
+        // モデル・音・背景は大きいので、実際に見た場面のぶんだけ後から
+        // キャッシュする。
+        //
+        // **置き場所を増やしたら、ここも増やすこと**（2026-09-15、本番へ
+        // 出す前に見つけた）。v0.4 で足した `models` / `textures` /
+        // `videos` がどれも入っておらず、**3D の魚も背景の動画も
+        // 1バイトもキャッシュされていなかった**。
+        // 不変条件7 があるので**オフラインでも「一応動く」** ——
+        // 手続き生成の魚とグラデーションに落ちるだけなので、
+        // **壊れたことに気づけない**（CLAUDE.md の
+        // 「フォールバックが効くので通っていないことに気づけない」そのもの）。
+        //
+        // 逆に `audio` と `fish` は**存在しない**ディレクトリだった
+        // （`public/` にあるのは backgrounds / models / posters /
+        // textures / videos / voice）。実態に合わせる。
+        // ==============================================================
         runtimeCaching: [
           {
-            urlPattern: /\/(audio|backgrounds|fish|voice)\/.*/,
+            urlPattern: /\/(backgrounds|models|posters|textures|videos|voice)\/.*/,
             handler: 'CacheFirst',
             options: {
               cacheName: 'poko-assets',
