@@ -24,6 +24,7 @@ import { StageRoot } from '../scene/StageRoot';
 import { VideoLayer } from '../scene/VideoLayer';
 import { ParentalGate } from '../ui/ParentalGate';
 import { Ripple } from '../ui/Ripple';
+import { Score } from '../ui/Score';
 import type { StageId } from '../types';
 
 /** 叩いた場所。**毎フレーム new をしない**（§10-3） */
@@ -46,6 +47,8 @@ export class App {
   private readonly ripple: Ripple;
   private readonly projector: ScreenProjector;
   private readonly gate: ParentalGate;
+  /** やさしい得点（§4-6）。**減らない・終わらない** */
+  private readonly score: Score;
   private readonly videoLayer: VideoLayer;
   private readonly audio = new AudioBus();
   private readonly assets = new AssetLoader();
@@ -55,6 +58,8 @@ export class App {
   private stageRoot: StageRoot | null = null;
   private stageId: StageId = 'ike';
   private building = false;
+  /** 花が咲いて、ステージの入れ替えを待っているか（§5-3） */
+  private changingStage = false;
 
   /** 開発と E2E 用。押した回数と、水たまりに当たった回数 */
   private tapCount = 0;
@@ -89,6 +94,16 @@ export class App {
     this.ripple = new Ripple(elements.ripples);
     this.projector = new ScreenProjector(document.body, this.renderer.camera);
     this.gate = new ParentalGate(elements.uiRoot);
+    // ==================================================================
+    // 得点（§4-6）と、花が咲いたらステージが変わる仕掛け（§5-3）。
+    //
+    // **画面に切替バーを置かない。** 1歳半にステージを選ばせる必要は無いし、
+    // **バーは当たり判定を塞ぐ**（「みずのなか」で 390px 幅の端末で
+    // 実際に起きた事故）。得点が「場面が変わる」という形で返るので、
+    // ★の意味が目に見える
+    // ==================================================================
+    this.score = new Score(elements.uiRoot);
+    this.score.onFlower = () => this.beginStageChange();
     this.videoLayer = new VideoLayer(elements.backgroundLayer);
     this.gate.onUnlock(() => {
       // TODO(Phase 7): 音量とステージのリセットを出す
@@ -122,6 +137,8 @@ export class App {
       // **更新時計を渡す。壁時計を読まない**（§11-4）
       this.stageRoot?.update(ctx.dt, this.loop.simulatedSeconds);
       this.speakOnRise();
+      // 花が咲いていたら、魚が引っ込みきった時点でステージを入れ替える（§5-3）
+      this.pumpStageChange();
     });
     this.loop.onRender(() => this.renderer.render(this.scene));
   }
@@ -150,6 +167,9 @@ export class App {
       }
       this.stageRoot = next;
       this.stageId = config.id;
+      // **入れ替え待ちを必ず解く。** 新しい `StageRoot` は抽選も魚も
+      // 作り直されているので、待ちが残っていると次の花で何も起きなくなる
+      this.changingStage = false;
       // **背景の動画を差し替える**（前のは `setVideo` の中で止めて捨てる）
       this.videoLayer.setVideo(next.video);
       this.scene.add(next.group);
@@ -225,6 +245,8 @@ export class App {
 
     if (scored) {
       this.fishHitCount++;
+      // **増えるだけ**（§4-6）。10個で花になり、花はステージを変える
+      this.score.add();
       this.audio.playOneShot('plop');
       // **「いてっ」は当たった合図。** `speak()` を通さない（§4-4）
       this.audio.playVoice('ite');
@@ -238,6 +260,56 @@ export class App {
       this.stageRoot?.spawner.reportHit(false);
     }
     this.stageRoot?.spawner.applyAssist(root.fish);
+  }
+
+  /**
+   * 花が咲いた（★10個）。**ステージを入れ替える準備を始める**（§5-3）。
+   *
+   * ========================================================================
+   * **その場で入れ替えない。** 出ている魚が消えてしまうし、叩いた手ごたえが
+   * 返る前に画面が変わると、何が起きたのか読めない。
+   *
+   * 抽選を止めて、いま出ている魚が引っ込みきるのを待つ
+   * （`update()` の中で見ている）。**待つあいだも叩ける**（不変条件2）し、
+   * 押せば波紋と音が返る（不変条件1）。
+   * **暗転もローディングも作らない**（§5-3）。
+   *
+   * **抽選を止めるだけでよい**（2026-09-15、実測して決めた）。
+   * `FishSystem` の「最後の1匹は代わりが出るまで沈まない」（不変条件4c）が
+   * 引っかかって永遠に切り替わらないのでは、と思って解除する仕掛けを
+   * 書いたが、**8通り測って7通りでフレーム数がまったく同じ**だった
+   * （残り1通りも 63 → 32フレーム）。あの決まりが効くのは
+   * 「相棒が沈んでいる最中」だけで、相棒はすぐ `hidden` になるので
+   * **自然に解ける**。要らない機構は置かない。
+   *
+   * 実測の待ち時間: **32〜283フレーム（0.5〜4.7秒）**。
+   * ========================================================================
+   */
+  private beginStageChange(): void {
+    if (this.changingStage || this.building) return;
+    const root = this.stageRoot;
+    if (!root) return;
+    this.changingStage = true;
+    root.spawner.setPaused(true);
+  }
+
+  /**
+   * 入れ替えの準備ができたか、毎フレーム見る（§5-3）。
+   *
+   * **岩の魚も引っ込みきるまで待つ。** 待たないと、出ている魚が
+   * 岩ごと消えて「いま見ていたものが無くなった」になる。
+   */
+  private pumpStageChange(): void {
+    if (!this.changingStage || this.building) return;
+    const root = this.stageRoot;
+    if (!root) return;
+    if (root.fish.countActive() > 0) return;
+    if (root.rocks.state !== 'hidden') return;
+
+    // **2ステージしか無いので、交互に行き来するだけ**（§5-3）
+    const next = STAGES.find((s) => s.id !== this.stageId) ?? STAGES[0];
+    this.changingStage = false;
+    void this.loadStage(next.id);
   }
 
   /**
@@ -260,6 +332,8 @@ export class App {
 
     if (result === 'hit') {
       this.fishHitCount++;
+      // 岩の魚も1匹は1匹。**水たまりと同じに数える**（§4-6）
+      this.score.add();
       this.audio.playOneShot('plop');
       // **「いてっ」は当たった合図**（§4-4。`speak()` を通さない）
       this.audio.playVoice('ite');
@@ -377,6 +451,10 @@ export class App {
       /** 岩（§4-8）。画面座標と当たり半径。**水たまりと重ならない**ことを見る */
       getRocks: () => this.stageRoot?.rocks.describe() ?? [],
       getRockTapCount: () => this.rockTapCount,
+      /** 得点（§4-6）。**数字は画面に出さない**ので、確認はここから */
+      getScore: () => this.score.describe(),
+      /** 花が咲いて、ステージの入れ替えを待っているか（§5-3） */
+      isChangingStage: () => this.changingStage,
       /** 岩の魚の様子。E2E が「ばあっ の時点で見えていない」を見る */
       getRockFish: () => {
         const rocks = this.stageRoot?.rocks;

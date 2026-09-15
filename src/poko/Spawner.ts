@@ -41,6 +41,8 @@ export class Spawner {
   /** 介助（§4-7）。**画面には出さない** */
   private missStreak = 0;
   private hitStreak = 0;
+  /** 入れ替えのあいだ抽選を止める（§5-3）。`setPaused()` を読むこと */
+  private paused = false;
 
   constructor(
     private readonly holeCount: number,
@@ -61,7 +63,21 @@ export class Spawner {
     }
   }
 
+  /**
+   * 抽選を止める／再開する（§5-3 のステージ入れ替え）。
+   *
+   * **止めるだけでよい。** `FishSystem` の「最後の1匹は代わりが出るまで
+   * 沈まない」（不変条件4c）が引っかかるのでは、と思って解除する仕掛けを
+   * 書いたが、**実測すると要らなかった**（8通り測って7通りで同じフレーム数）。
+   * あの決まりが効くのは「相棒が沈んでいる最中」だけで、相棒はすぐ
+   * `hidden` になるので自然に解ける。
+   */
+  setPaused(on: boolean): void {
+    this.paused = on;
+  }
+
   update(dt: number, fish: FishSystem): void {
+    if (this.paused) return;
     // ==================================================================
     // **叩ける相手が途切れないこと**（不変条件4c）。
     // 0匹になりそうなら、待ち時間を無視して即座に出す。

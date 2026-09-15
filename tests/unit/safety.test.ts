@@ -30,6 +30,7 @@ import {
   RockSystem,
 } from '../../src/poko/RockSystem';
 import { Spawner } from '../../src/poko/Spawner';
+import { STARS_PER_FLOWER } from '../../src/ui/Score';
 import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
 
 /**
@@ -968,4 +969,100 @@ describe('岩が魚を隠す（§4-8）', () => {
       });
     }
   }
+});
+
+/**
+ * やさしい得点とステージの入れ替え（§4-6 / §5-3。Phase 4）。
+ *
+ * ==========================================================================
+ * **★の数え方そのものは DOM が要る**（`ui/Score.ts` は `document` を使う）ので、
+ * ここでは**入れ替えの仕掛け**を見る。E2E 側が「10回叩くと花が咲いて
+ * ステージが変わる」を通しで見ている。
+ *
+ * ここで押さえるのは **「花が咲いてもステージが永遠に変わらない」** という
+ * 壊れ方。抽選を止めたあと魚が引っ込みきらないと `countActive()` が 0 に
+ * ならず、切り替えが起きない。**目で見ても「たまに変わらない」としか
+ * 分からない**ので、数値にして残す。
+ * ==========================================================================
+ */
+describe('得点とステージの入れ替え（§4-6 / §5-3）', () => {
+  function makeBoth(seed: number): { fish: FishSystem; spawner: Spawner } {
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    return { fish, spawner: new Spawner(STAGES[0].holes.length, seed) };
+  }
+  const DT = 1 / 60;
+
+  it('★10個で花が1つ（§4-6）', () => {
+    expect(STARS_PER_FLOWER).toBe(10);
+  });
+
+  it('抽選を止めれば、魚は必ず引っ込みきる（§5-3）', () => {
+    // ==================================================================
+    // **ここが 0 にならないとステージが永遠に変わらない。**
+    //
+    // `FishSystem` の「最後の1匹は代わりが出るまで沈まない」（不変条件4c）が
+    // 引っかかるのでは、と思って解除する仕掛けを書いたが、**実測して
+    // 要らないと分かった**（8通りのうち7通りでフレーム数が同じ）。
+    // あの決まりが効くのは「相棒が沈んでいる最中」だけで、相棒はすぐ
+    // `hidden` になるので自然に解ける。
+    //
+    // **いろいろな時点で止めて確かめる。** 止めた瞬間の状態によって
+    // 引っかかり方が変わるので、1点だけ見ても意味が無い
+    // ==================================================================
+    for (const warmup of [300, 600, 900, 1200, 1500, 1800, 2100, 2400]) {
+      const { fish, spawner } = makeBoth(4321);
+      for (let i = 0; i < warmup; i++) {
+        spawner.update(DT, fish);
+        fish.update(DT);
+      }
+      spawner.setPaused(true);
+
+      let frames = -1;
+      for (let f = 0; f < 60 * 30; f++) {
+        fish.update(DT);
+        if (fish.countActive() === 0) {
+          frames = f;
+          break;
+        }
+      }
+      expect(frames, `${warmup}フレームで止めたら引っ込みきらなかった`).toBeGreaterThanOrEqual(0);
+      // 実測は 32〜283フレーム。**待たせすぎていないこと**も見る
+      expect(frames, `${warmup}フレームで止めたら ${frames}フレーム掛かった`).toBeLessThan(60 * 8);
+    }
+  });
+
+  it('引っ込みきるまで、叩ける相手は居続ける（不変条件2）', () => {
+    // **入れ替えを待つあいだも叩ける。** 沈んでいる途中も `hit()` は通る
+    const { fish, spawner } = makeBoth(4321);
+    for (let i = 0; i < 60 * 20; i++) {
+      spawner.update(DT, fish);
+      fish.update(DT);
+    }
+    spawner.setPaused(true);
+    let sawHittable = 0;
+    for (let i = 0; i < 60 * 12; i++) {
+      if (fish.countHittable() > 0) sawHittable++;
+      fish.update(DT);
+      if (fish.countActive() === 0) break;
+    }
+    expect(sawHittable, '止めた瞬間から叩けなくなっていた').toBeGreaterThan(0);
+  });
+
+  it('抽選を再開すると、また出はじめる', () => {
+    // **解き忘れると、入れ替えたあとのステージで魚が1匹も出ない**
+    const { fish, spawner } = makeBoth(4321);
+    spawner.setPaused(true);
+    for (let i = 0; i < 60 * 12; i++) {
+      spawner.update(DT, fish);
+      fish.update(DT);
+    }
+    expect(fish.countActive()).toBe(0);
+
+    spawner.setPaused(false);
+    for (let i = 0; i < 60 * 6; i++) {
+      spawner.update(DT, fish);
+      fish.update(DT);
+    }
+    expect(fish.countActive(), '解いても出てこない').toBeGreaterThan(0);
+  });
 });

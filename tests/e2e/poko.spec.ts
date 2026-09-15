@@ -45,6 +45,8 @@ declare global {
       reloadStage(): Promise<void>;
       getRocks(): { id: string; x: number; y: number; radiusPx: number }[];
       getRockTapCount(): number;
+      getScore(): { stars: number; flowers: number };
+      isChangingStage(): boolean;
       getRockFish(): {
         id: string | null;
         state: string;
@@ -587,6 +589,92 @@ test.describe('骨組み（Phase 1）', () => {
 
     const log = await page.evaluate(() => window.__poko.getVoiceLog());
     expect(log.slice(before).some((v) => v.clip === 'ite')).toBe(true);
+  });
+
+  /** 出ている魚を1匹叩く。**`up` だけを狙う** —— `rising` は動いているので外れる */
+  async function whackOne(page: Page): Promise<boolean> {
+    const hole = await page.evaluate(async () => {
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 8) {
+        const f = window.__poko.getFish().find((f) => f.state === 'up');
+        if (f) return window.__poko.getHoles()[f.holeIndex];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return null;
+    });
+    if (!hole) return false;
+    await page.mouse.click(hole.x, hole.y);
+    return true;
+  }
+
+  test('★が10個たまると花が咲いて、ステージが入れ替わる（§4-6 / §5-3）', async ({ page }) => {
+    // ==================================================================
+    // **画面に切替バーを置かない**（§5-3）。1歳半にステージを選ばせる
+    // 必要は無いし、**バーは当たり判定を塞ぐ**（「みずのなか」で 390px 幅の
+    // 端末で実際に起きた事故）。得点が「場面が変わる」形で返る
+    // ==================================================================
+    await boot(page);
+    const first = await page.evaluate(() => window.__poko.getStageId());
+
+    for (let i = 0; i < 40; i++) {
+      const score = await page.evaluate(() => window.__poko.getScore());
+      if (score.flowers > 0) break;
+      await whackOne(page);
+    }
+
+    const bloomed = await page.evaluate(() => window.__poko.getScore());
+    expect(bloomed.flowers, '10回叩いても花が咲かない').toBe(1);
+    // **★は 0 に戻る**（§4-6）
+    expect(bloomed.stars).toBe(0);
+
+    // **暗転もローディングも作らない。** 待つあいだも押せば反応が返る
+    const before = await page.evaluate(() => window.__poko.getTapCount());
+    await page.mouse.click(206, 500);
+    await expect
+      .poll(() => page.evaluate(() => window.__poko.getTapCount()))
+      .toBe(before + 1);
+
+    // 静かに入れ替わる（**2ステージしか無いので交互に行き来する**）
+    await page.waitForFunction(
+      (from) => window.__poko.getStageId() !== from && window.__poko.getHoles().length === 6,
+      first,
+      { timeout: 60_000 }
+    );
+    expect(await page.evaluate(() => window.__poko.isChangingStage())).toBe(false);
+    // **得点は減らない**（不変条件11）。ステージが変わっても花は残る
+    expect((await page.evaluate(() => window.__poko.getScore())).flowers).toBe(1);
+  });
+
+  test('得点表示が当たり判定を塞がない（§3-4）', async ({ page }) => {
+    // ==================================================================
+    // **`pointer-events: none` を外すとここが落ちる。**
+    // ★の帯は**画面の上の岩の当たり判定に重なる**（岩の円は y 80〜296px）。
+    // 「みずのなか」で切替ボタンを5個並べたら 390px 幅の端末で2行に折り返し、
+    // バーが 172px になって下の岩に覆いかぶさった事故と同じことが起きる
+    // ==================================================================
+    await boot(page);
+    // ★を何個か並べてから測る（0個だと帯が無いので何も証明できない）
+    for (let i = 0; i < 12; i++) {
+      const score = await page.evaluate(() => window.__poko.getScore());
+      if (score.stars >= 3) break;
+      await whackOne(page);
+    }
+    expect((await page.evaluate(() => window.__poko.getScore())).stars).toBeGreaterThanOrEqual(3);
+
+    // ★の真上を押す
+    const before = await page.evaluate(() => window.__poko.getTapCount());
+    await page.mouse.click(30, 14);
+    await expect
+      .poll(() => page.evaluate(() => window.__poko.getTapCount()))
+      .toBe(before + 1);
+
+    // 岩も押せる（★の帯の下にある）
+    const rocks = await page.evaluate(() => window.__poko.getRocks());
+    const rockBefore = await page.evaluate(() => window.__poko.getRockTapCount());
+    await page.mouse.click(rocks[0].x, rocks[0].y);
+    await expect
+      .poll(() => page.evaluate(() => window.__poko.getRockTapCount()))
+      .toBe(rockBefore + 1);
   });
 
   test('素材が1つも無くても起動して、どこを押しても反応が返る（不変条件7）', async ({ page }) => {

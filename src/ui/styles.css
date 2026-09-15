@@ -175,6 +175,47 @@ body {
   pointer-events: none;
 }
 
+/* --- やさしい得点（§4-6）----------------------------------------------- */
+
+/*
+ * **`pointer-events: none` を外さないこと**（§3-4）。
+ *
+ * この帯は**画面の上の岩の当たり判定に重なる**（岩の円は画面 y 80〜296px）。
+ * 塞いだ瞬間に岩のばあが死ぬ。「みずのなか」で切替ボタンを5個並べたら
+ * 390px 幅の端末で2行に折り返し、バーが 172px になって
+ * **下の岩に覆いかぶさった**事故と同じことが起きる。
+ *
+ * **右上 24×24px（ペアレンタルゲート）を避ける。** そこはゲートの持ち場で、
+ * こちらが重なると長押しが届かなくなる。右に余白を取ってある。
+ */
+.score {
+  position: absolute;
+  top: calc(4px + var(--safe-top));
+  left: calc(6px + var(--safe-left));
+  /* 右上のゲート（24px）＋余白を空ける */
+  right: calc(38px + var(--safe-right));
+  z-index: 4;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* **画面の端で折り返して並び続ける**（§4-6。上限を作らない） */
+.score-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+}
+
+.score-mark {
+  display: block;
+  line-height: 0;
+  /* 背景の動画や岩の上に乗るので、輪郭を影で起こす。
+     **光らせない** —— 不変条件6（明滅を作らない）に触れない静かな影にする */
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.55));
+}
+
 /* --- ペアレンタルゲート（§2）------------------------------------------- */
 
 .gate__hotspot {
