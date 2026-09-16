@@ -413,14 +413,32 @@ describe('さかなの状態遷移（§4-1 / §4-3）', () => {
     expect(fish.actors[0].bump).toBeCloseTo(1, 1);
   });
 
-  it('出ている時間は 4.0秒（v0.1 の 2.6秒から伸ばした）', () => {
-    expect(TIMING.upSec).toBeCloseTo(4.0, 5);
+  it('出ている時間は 6.0秒（2026-09-16 に 4.0 から伸ばした）', () => {
+    // **実機で「魚の戻るのが早くて、叩けない時が多々ある」**（2026-09-16）。
+    // 数字ごと後ろへずらした。**下げ直すときは人間が決めること**
+    expect(TIMING.upSec).toBeCloseTo(6.0, 5);
     const fish = makeSystem();
     fish.spawn(0, 0, 1);
-    advance(fish, TIMING.callSec + 0.7 + 3.5);
+    advance(fish, TIMING.callSec + 0.7 + TIMING.upSec - 0.5);
     expect(fish.actors[0].state).toBe('up');
     advance(fish, 0.7);
     expect(fish.actors[0].state).toBe('retreating');
+  });
+
+  it('叩ける時間は、いちばん厳しい設定でも 5.5秒ある（2026-09-16）', () => {
+    // ==================================================================
+    // **介助は「当たるようにする仕掛け」なのに、常に難しくしていた。**
+    //
+    // 4通りの遊びかた（反応 1.2〜3.0秒・狙い外し 15〜30%）で 400秒ずつ
+    // 回して測ったら、**4通りとも下限に張り付いた**。沈む最中の遅い指も
+    // 当たりに数える（§4-3）ので、当たりは連続しやすく外しは連続しにくい。
+    //
+    // だから**下限そのもの**を見る。ここが「叩ける最短の時間」になる
+    // ==================================================================
+    const worst = ASSIST.minUpSec + TIMING.retreatSec;
+    expect(worst, `いちばん厳しくて ${worst.toFixed(1)}秒`).toBeGreaterThanOrEqual(5.5);
+    // 出はじめ（`rising`）からも叩けるので、実際はさらに長い
+    expect(TIMING.risingSec).toBeGreaterThan(0);
   });
 
   it('叩いた同じ呼び出しで潰れが始まる（§4-3 の0フレーム原則）', () => {
@@ -752,19 +770,37 @@ describe('岩陰のばあ（§4-8）', () => {
     expect(rocks.bump).toBeGreaterThan(0);
   });
 
-  it('引っ込む途中に押しても、もう一度出てくる（不変条件2）', () => {
+  it('引っ込む途中に押したら「叩いた」になる（§4-3 / 不変条件2）', () => {
     // ==================================================================
     // **みずのなかから変えたところ。**
     // 向こうは `retreating` 中と `cooldown` 中のタップを捨てていたが、
     // それは「アニメーション中だから無視」そのもので、この app では禁止。
     // 向こうの貝がまさにそれで壊れている（連打すると 0.45秒の開閉が
-    // 一度も完了せず、開き量の最大が 0.037 だった）
+    // 一度も完了せず、開き量の最大が 0.037 だった）。
+    //
+    // **さらに「叩いた」に数える**（2026-09-16、実機で「戻るのが早くて
+    // 叩けない」と言われて）。前は押すともう一度ばあに戻していた。
+    // 反応は返るので不変条件2 は満たしていたが、**「いてっ」も★も返らない**
+    // ので、子どもには「当たらなかった」と同じに見える。
+    // 水たまりの魚は沈む最中も当たりに数えている（§4-3）ので、そろえた
     // ==================================================================
     const rocks = rocksOf('ike');
     rocks.tap(0);
     while (rocks.state !== 'retreating') rocks.update(1 / 60);
-    expect(rocks.tap(0)).toBe('baa');
+    expect(rocks.tap(0)).toBe('hit');
+    expect(rocks.state).toBe('hit');
+    // **その場で潰れる**（§4-3 の0フレーム原則）
+    expect(rocks.squash).toBeGreaterThan(0);
+  });
+
+  it('引っ込む途中に「別の」岩を押したら、そこから出し直す（不変条件2）', () => {
+    // そこには居ないので叩きようがない。**押した岩から出る**のが約束
+    const rocks = rocksOf('ike');
+    rocks.tap(0);
+    while (rocks.state !== 'retreating') rocks.update(1 / 60);
+    expect(rocks.tap(1)).toBe('baa');
     expect(rocks.state).toBe('calling');
+    expect(rocks.rockIndex).toBe(1);
   });
 
   it('連打しても、出きるところまで必ず進む（不変条件2）', () => {
@@ -1064,5 +1100,114 @@ describe('得点とステージの入れ替え（§4-6 / §5-3）', () => {
       fish.update(DT);
     }
     expect(fish.countActive(), '解いても出てこない').toBeGreaterThan(0);
+  });
+});
+
+/**
+ * 叩けるかどうかを、遊びかたごとに測る（§4-7。2026-09-16）。
+ *
+ * ==========================================================================
+ * **実機で「魚の戻るのが早くて、叩けない時が多々ある」と言われた。**
+ *
+ * 原因は `up` の長さそのものではなく、**介助（`ASSIST`）が常に下限まで
+ * 縮めていた**こと。沈む最中の遅い指も「当たり」に数える（§4-3）ので、
+ * **当たりは連続しやすく、外しは連続しにくい**。結果、どんな遊びかたでも
+ * 下限に張り付いた。設計書 §4-7 が「当たるようになってきたからと
+ * 速くしていくと、いちばん当たっていた設定を自分で壊す」と警告していた
+ * とおりの壊れ方をしていた。
+ *
+ * **目で見ても「たまに間に合わない」としか分からない**ので、
+ * 1歳半らしい遊びかたを数値にして見張る。
+ * ==========================================================================
+ */
+describe('叩けるかどうか（§4-7）', () => {
+  /**
+   * 反応 `react` 秒（ばらつき `jitter`）で、`wrongAim` の割合で別の場所を押す
+   * 子どもが `seconds` 秒遊んだときの結果。
+   *
+   * **出きってから気づく**（`rising` 中は見ていない）。
+   * **間に合わなかった指は空の水たまりに落ちる** —— 実機ではそれが
+   * 「外し」になり、介助が効く。捨ててしまうと介助が測れない
+   */
+  function play(react: number, jitter: number, wrongAim: number, seconds = 400) {
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    const spawner = new Spawner(STAGES[0].holes.length, 4321);
+    const DT = 1 / 60;
+    let seed = 98765;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+
+    const aim = new Map<number, number>();
+    const seen = new Set<number>();
+    let t = 0;
+    let hits = 0;
+    let misses = 0;
+    /** **間に合わずに逃げられた回。ここが増えるのが「叩けない」** */
+    let tooLate = 0;
+
+    for (let f = 0; f < seconds * 60; f++) {
+      spawner.update(DT, fish);
+      fish.update(DT);
+      t += DT;
+
+      fish.actors.forEach((a, i) => {
+        if (a.state === 'up' && !seen.has(i)) {
+          seen.add(i);
+          aim.set(i, t + react + (rnd() - 0.5) * 2 * jitter);
+        }
+        if (a.state === 'hidden' && seen.has(i)) seen.delete(i);
+      });
+
+      for (const [i, when] of [...aim]) {
+        if (t < when) continue;
+        aim.delete(i);
+        if (rnd() < wrongAim) {
+          misses++;
+          spawner.reportHit(false);
+          spawner.applyAssist(fish);
+          continue;
+        }
+        const a = fish.actors[i];
+        const reachable = a.state === 'rising' || a.state === 'up' || a.state === 'retreating';
+        if (reachable && fish.hit(i)) {
+          hits++;
+          spawner.reportHit(true);
+        } else {
+          misses++;
+          tooLate++;
+          spawner.reportHit(false);
+        }
+        spawner.applyAssist(fish);
+      }
+    }
+    return { hits, misses, tooLate, finalUpSec: fish.getUpSec() };
+  }
+
+  /** 反応の速さ・ばらつき・狙いの外しかた。**いちばん遅い子まで見る** */
+  const PLAYERS: [string, number, number, number][] = [
+    ['速い', 1.2, 0.4, 0.15],
+    ['ふつう', 1.8, 0.6, 0.2],
+    ['遅い', 2.4, 0.8, 0.25],
+    ['とても遅い', 3.0, 1.0, 0.3],
+  ];
+
+  for (const [name, react, jitter, wrongAim] of PLAYERS) {
+    it(`${name}子（反応 ${react}±${jitter}秒）が、間に合わずに逃げられない`, () => {
+      const r = play(react, jitter, wrongAim);
+      // **狙いを外すのは構わない**（それは当たり判定の話）。
+      // ここで見るのは「**狙ったのに、もう居なかった**」回
+      expect(r.tooLate, `${r.tooLate}回 間に合わなかった`).toBe(0);
+    });
+  }
+
+  it('介助が、いちばん難しい設定に張り付かない', () => {
+    // **`minUpSec` を下げ直すときは、ここが落ちることを承知で人間が決めること。**
+    // 4通りとも下限に張り付くのは仕様どおり（当たりは連続しやすい）。
+    // **張り付いた先が十分に長いか**を見る
+    const worst = ASSIST.minUpSec + TIMING.retreatSec;
+    expect(worst, `張り付いても ${worst.toFixed(1)}秒`).toBeGreaterThanOrEqual(5.5);
+    for (const [name, react, jitter, wrongAim] of PLAYERS) {
+      const r = play(react, jitter, wrongAim);
+      expect(r.finalUpSec, `${name}子`).toBeGreaterThanOrEqual(ASSIST.minUpSec);
+    }
   });
 });
