@@ -20,6 +20,7 @@
  * ==========================================================================
  */
 
+import { pickVariant, type FishVariant } from '../data/special';
 import { ASSIST, MAX_UP_FISH, TIMING } from '../data/timing';
 import type { FishSystem } from './FishSystem';
 
@@ -43,6 +44,8 @@ export class Spawner {
   private hitStreak = 0;
   /** 入れ替えのあいだ抽選を止める（§5-3）。`setPaused()` を読むこと */
   private paused = false;
+  /** 次の1匹だけ決め打ちする種類（開発と E2E 用）。`forceNext()` を読むこと */
+  private forced: FishVariant | null = null;
 
   constructor(
     private readonly holeCount: number,
@@ -74,6 +77,17 @@ export class Spawner {
    */
   setPaused(on: boolean): void {
     this.paused = on;
+  }
+
+  /**
+   * 次に出る1匹の種類を決め打ちする（開発と E2E 用）。
+   *
+   * **本番の抽選には影響しない。** 1匹ぶん使ったら自動で消える。
+   * §6-2 の きんいろ（16回に1回）と 大きい（20回に1回）は、
+   * 実機で確かめようとすると何分も待つことになるので、口を開けておく。
+   */
+  forceNext(variant: FishVariant | null): void {
+    this.forced = variant;
   }
 
   update(dt: number, fish: FishSystem): void {
@@ -144,7 +158,21 @@ export class Spawner {
     const holeIndex = pool[Math.floor(this.rng() * pool.length) % pool.length];
     // §6-1 のばらつき。**速さを ±10% 振る**（合計時間は待ちで吸収する）
     const speed = 0.9 + this.rng() * 0.2;
-    if (!fish.spawn(actorIndex, holeIndex, speed)) return false;
+    // ==================================================================
+    // §6-2 の特別な魚。**乱数は1つだけ引く** ——
+    // 2回引いて順に判定すると、2つ目の実測が指定した割合にならない
+    // （きんいろを外したぶん大きいが出やすくなる）。
+    // **2連続を禁じる規則は入れない**ので、当たり＝実測の割合になる。
+    // それでも単体テストが数えて確かめている
+    // ==================================================================
+    // **次の1匹だけ種類を決め打ちできる**（開発と E2E 用）。
+    // 16回に1回・20回に1回を待たずに実機で見られるようにするため。
+    // **抽選そのものは必ず引く** —— 引かないと乱数の列がずれて、
+    // 決め打ちした回のあとの出かたが変わってしまう
+    const rolled = pickVariant(this.rng());
+    const variant = this.forced ?? rolled;
+    this.forced = null;
+    if (!fish.spawn(actorIndex, holeIndex, speed, variant)) return false;
     this.lastHole = holeIndex;
     return true;
   }

@@ -20,6 +20,7 @@
 import * as THREE from 'three';
 
 import type { FishConfig } from '../types';
+import { SPECIAL } from '../data/special';
 import { createBumpArt, createFishArt } from './FishArt';
 import { buildModelFish } from './ModelFish';
 
@@ -47,6 +48,21 @@ export interface ProceduralFish {
   readonly width: number;
   /** **この x より左を描かない**（ワールド座標）。穴の口に合わせる */
   setClipX(worldX: number): void;
+  /**
+   * きんいろにする／戻す（§6-2）。
+   *
+   * ==========================================================================
+   * **色を「掛ける」だけでは金にならない**（2026-09-16、絵で確認した）。
+   *
+   * 材質の `color` はテクスチャや頂点カラーに**掛け算**で効くので、
+   * 赤い金魚に金を掛けても橙のままだし、青いハギに掛けると暗い緑になる。
+   * CLAUDE.md の「白の上に白を重ねても何も変わらない」と同じ話。
+   *
+   * **体の絵と頂点カラーごと外して、まっさらな金に置き換える。**
+   * 輪郭は残るので「金色になった魚」に見える。
+   * ==========================================================================
+   */
+  setGold(on: boolean): void;
   /** たんこぶの育ち 0..1 */
   setBump(t: number): void;
   dispose(): void;
@@ -104,6 +120,26 @@ export function createProceduralFish(
       setClipX(worldX: number) {
         clip3d.constant = -worldX;
       },
+      setGold(on: boolean) {
+        for (const material of built.materials) {
+          const m = material as THREE.MeshStandardMaterial;
+          if (on) {
+            // **体の絵と頂点カラーを外す。** 残すと掛け算になって金にならない
+            m.map = null;
+            m.vertexColors = false;
+            m.color.set(SPECIAL.goldColor);
+            // 弱い自発光で、暗い水の中でも金に見せる。
+            // **強くしない** —— 強いと輪郭が飛んで「光る塊」になる
+            m.emissive.set(0x6a4a05);
+          } else {
+            m.map = skin;
+            m.vertexColors = true;
+            m.color.set(0xffffff);
+            m.emissive.set(0x000000);
+          }
+          m.needsUpdate = true;
+        }
+      },
       setBump(t: number) {
         bump3d.visible = t > 0;
         if (t > 0) bump3d.scale.setScalar(Math.min(1, t * 1.2));
@@ -151,6 +187,8 @@ export function createProceduralFish(
         toneMapped: false,
       })
     : new THREE.MeshBasicMaterial({ color: config.color, toneMapped: false });
+  // **戻す先の色**（`setTint(null)` で使う）
+  const baseColor = material.color.getHex();
   const plate = new THREE.Mesh(geometry, material);
   plate.name = 'fish.plate';
   group.add(plate);
@@ -189,6 +227,17 @@ export function createProceduralFish(
     setClipX(worldX: number) {
       // 面の向きは +x なので、constant は -x
       clip.constant = -worldX;
+    },
+    setGold(on: boolean) {
+      // ==================================================================
+      // **canvas の絵のほうは、掛け算しかできない。**
+      // 絵の透明部分で形を切り抜いている（`alphaTest`）ので、
+      // `map` を外すと**金色の四角い板**になってしまう。
+      //
+      // ここは素材が1つも無いときのフォールバック（不変条件7）で、
+      // 本番の4種はすべてモデルを持っている。**弱い金で妥協する**
+      // ==================================================================
+      material.color.set(on ? SPECIAL.goldColor : baseColor);
     },
     setBump(t: number) {
       bump.visible = t > 0;

@@ -79,6 +79,18 @@ export class Score {
     this.render();
   }
 
+  /**
+   * 花を1つ咲かせる（§6-2 のきんいろのさかな）。
+   *
+   * **★を経由しない。** ★10個ぶんの近道なので、いま並んでいる★は
+   * そのまま残す（消すと「叩いたのに減った」に見える。不変条件11）。
+   */
+  addFlower(): void {
+    this.flowers++;
+    this.render();
+    this.onFlower?.();
+  }
+
   /** 開発と E2E 用 */
   describe(): { stars: number; flowers: number } {
     return { stars: this.stars, flowers: this.flowers };

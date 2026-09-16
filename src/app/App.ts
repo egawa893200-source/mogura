@@ -19,6 +19,7 @@ import { Renderer } from '../core/Renderer';
 import { ScreenProjector } from '../core/ScreenProjector';
 import { WakeLock } from '../core/WakeLock';
 import { LIGHTS } from '../data/look';
+import { SPECIAL } from '../data/special';
 import { STAGES, findStage } from '../data/stages';
 import { StageRoot } from '../scene/StageRoot';
 import { VideoLayer } from '../scene/VideoLayer';
@@ -245,8 +246,20 @@ export class App {
 
     if (scored) {
       this.fishHitCount++;
-      // **増えるだけ**（§4-6）。10個で花になり、花はステージを変える
-      this.score.add();
+      // ==================================================================
+      // **増えるだけ**（§4-6）。10個で花になり、花はステージを変える。
+      //
+      // §6-2 の特別な魚は、ここで返りかたを変える:
+      //  - **きんいろ** → 花が1つ咲く（＝その場でステージが変わる）
+      //  - **大きい**   → ★が3つ増える
+      //
+      // **どちらも `actor` を見て決める。** `actor` は `hit()` を呼んだあとも
+      // まだ `variant` を持っている（引っ込みきったときに戻る）
+      // ==================================================================
+      const variant = actor?.variant ?? 'normal';
+      if (variant === 'gold') this.score.addFlower();
+      else if (variant === 'big') for (let i = 0; i < SPECIAL.bigStars; i++) this.score.add();
+      else this.score.add();
       this.audio.playOneShot('plop');
       // **「いてっ」は当たった合図。** `speak()` を通さない（§4-4）
       this.audio.playVoice('ite');
@@ -426,6 +439,7 @@ export class App {
           squash: +a.squash.toFixed(3),
           bump: +a.bump.toFixed(3),
           holeIndex: a.holeIndex,
+          variant: a.variant,
         })) ?? [],
       getFishSizes: () => this.stageRoot?.fish.describeSizes() ?? [],
       getFishDebug: () =>
@@ -453,6 +467,13 @@ export class App {
       getRockTapCount: () => this.rockTapCount,
       /** 得点（§4-6）。**数字は画面に出さない**ので、確認はここから */
       getScore: () => this.score.describe(),
+      /**
+       * 次に出る1匹の種類を決め打ちする（§6-2）。
+       * **16回に1回・20回に1回を待たずに実機で見るための口。**
+       * 例: `__poko.forceVariant('gold')`
+       */
+      forceVariant: (v: 'normal' | 'big' | 'gold' | null) =>
+        this.stageRoot?.spawner.forceNext(v),
       /** 花が咲いて、ステージの入れ替えを待っているか（§5-3） */
       isChangingStage: () => this.changingStage,
       /** 岩の魚の様子。E2E が「ばあっ の時点で見えていない」を見る */

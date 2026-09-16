@@ -28,6 +28,7 @@ declare global {
         squash: number;
         bump: number;
         holeIndex: number;
+        variant: 'normal' | 'big' | 'gold';
       }[];
       getHittableCount(): number;
       getUpSec(): number;
@@ -47,6 +48,7 @@ declare global {
       getRockTapCount(): number;
       getScore(): { stars: number; flowers: number };
       isChangingStage(): boolean;
+      forceVariant(v: 'normal' | 'big' | 'gold' | null): void;
       getRockFish(): {
         id: string | null;
         state: string;
@@ -675,6 +677,53 @@ test.describe('骨組み（Phase 1）', () => {
     await expect
       .poll(() => page.evaluate(() => window.__poko.getRockTapCount()))
       .toBe(rockBefore + 1);
+  });
+
+  /** 次の1匹を `variant` にして、出きるまで待って叩く */
+  async function whackVariant(page: Page, variant: 'big' | 'gold'): Promise<void> {
+    await page.evaluate((v) => window.__poko.forceVariant(v), variant);
+    const hole = await page.evaluate(async (v) => {
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 40) {
+        const f = window.__poko.getFish().find((f) => f.variant === v && f.state === 'up');
+        if (f) return window.__poko.getHoles()[f.holeIndex];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return null;
+    }, variant);
+    expect(hole, `${variant} が出てこない`).not.toBeNull();
+    await page.mouse.click(hole!.x, hole!.y);
+  }
+
+  test('大きいさかなを叩くと ★が3つ増える（§6-2）', async ({ page }) => {
+    // **16回に1回・20回に1回を待たない。** `forceVariant` で決め打ちする
+    // （出る割合そのものは単体テストが 5,280回ぶん数えている）
+    await boot(page);
+    const before = await page.evaluate(() => window.__poko.getScore());
+    await whackVariant(page, 'big');
+    const after = await page.evaluate(() => window.__poko.getScore());
+    const gained =
+      (after.flowers - before.flowers) * 10 + (after.stars - before.stars);
+    expect(gained, `★が ${gained} しか増えていない`).toBe(3);
+  });
+
+  test('きんいろのさかなを叩くと 花が咲いてステージが変わる（§6-2 / §5-3）', async ({ page }) => {
+    await boot(page);
+    const first = await page.evaluate(() => window.__poko.getStageId());
+    const before = await page.evaluate(() => window.__poko.getScore());
+    await whackVariant(page, 'gold');
+
+    const after = await page.evaluate(() => window.__poko.getScore());
+    expect(after.flowers, '花が咲いていない').toBe(before.flowers + 1);
+    // **★は減らない**（不変条件11）。近道であって、やり直しではない
+    expect(after.stars).toBe(before.stars);
+
+    // ★10個を待たずに場面が変わる
+    await page.waitForFunction(
+      (from) => window.__poko.getStageId() !== from && window.__poko.getHoles().length === 6,
+      first,
+      { timeout: 60_000 }
+    );
   });
 
   test('素材が1つも無くても起動して、どこを押しても反応が返る（不変条件7）', async ({ page }) => {

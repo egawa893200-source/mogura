@@ -20,6 +20,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { FISH, SPARE_FISH, findFish } from '../../src/data/fish';
+import { SPECIAL, pickVariant } from '../../src/data/special';
 import { STAGES, findStage } from '../../src/data/stages';
 import { ASSIST, MAX_UP_FISH, ROCK_TIMING, TIMING } from '../../src/data/timing';
 import { FishSystem } from '../../src/poko/FishSystem';
@@ -1209,5 +1210,111 @@ describe('叩けるかどうか（§4-7）', () => {
       const r = play(react, jitter, wrongAim);
       expect(r.finalUpSec, `${name}子`).toBeGreaterThanOrEqual(ASSIST.minUpSec);
     }
+  });
+});
+
+/**
+ * ときどき出る特別な魚（§6-2。2026-09-16、人間が選んだ）。
+ *
+ * ==========================================================================
+ * **抽選の当たりと、実際に出る割合は違う。**
+ *
+ * 「ばあ！」でサプライズの当たりに 1/3 をそのまま入れたら、2連続で出さない
+ * 規則があったせいで**実測は 3.7〜4.0回に1回**だった。設計書 §6-2 は
+ * 「**必ず数えて確かめること**」と書いている。ここがその数え役。
+ * ==========================================================================
+ */
+describe('特別な魚（§6-2）', () => {
+  it('乱数の数直線を3つに区切っているだけ（片方が他方を押し出さない）', () => {
+    // **先に金を判定して残りで大を判定すると、大の実測が 1/20 にならない**
+    // （1/17.1 になる）。1本の数直線を切れば、どちらも指定どおりになる
+    expect(pickVariant(0)).toBe('gold');
+    expect(pickVariant(SPECIAL.goldChance - 1e-9)).toBe('gold');
+    expect(pickVariant(SPECIAL.goldChance)).toBe('big');
+    expect(pickVariant(SPECIAL.goldChance + SPECIAL.bigChance - 1e-9)).toBe('big');
+    expect(pickVariant(SPECIAL.goldChance + SPECIAL.bigChance)).toBe('normal');
+    expect(pickVariant(0.999)).toBe('normal');
+  });
+
+  it('実測の割合が、指定どおりになる（きんいろ 1/16・大きい 1/20）', () => {
+    // **一様な乱数で数える。** `Spawner` の乱数そのものではなく、
+    // 区切りかたが正しいかを見る（`Spawner` 側は下のテストで見る）
+    const N = 200000;
+    let gold = 0;
+    let big = 0;
+    for (let i = 0; i < N; i++) {
+      const v = pickVariant((i + 0.5) / N);
+      if (v === 'gold') gold++;
+      else if (v === 'big') big++;
+    }
+    expect(N / gold, `きんいろは ${(N / gold).toFixed(1)}回に1回`).toBeCloseTo(16, 1);
+    expect(N / big, `大きいは ${(N / big).toFixed(1)}回に1回`).toBeCloseTo(20, 1);
+  });
+
+  it('実際に出してみても、その割合になる（§6-2「必ず数えて確かめる」）', () => {
+    // ==================================================================
+    // **`Spawner` を通して数える。** 区切りかたが正しくても、
+    // 乱数の引きかたを変えたときにここがずれる。
+    // 「ばあ！」はここを確かめずに 1/3 を入れて、実測 1/3.7〜4.0 だった
+    // ==================================================================
+    const counts = { normal: 0, big: 0, gold: 0 };
+    const DT = 1 / 60;
+    // シードを変えて何回も回す（1本の列だけだと偏りを見逃す）
+    for (let seed = 1; seed <= 40; seed++) {
+      const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+      const spawner = new Spawner(STAGES[0].holes.length, seed * 7919);
+      const seen = new Set<number>();
+      for (let f = 0; f < 60 * 600; f++) {
+        spawner.update(DT, fish);
+        fish.update(DT);
+        fish.actors.forEach((a, i) => {
+          if (a.state !== 'hidden' && !seen.has(i)) {
+            seen.add(i);
+            counts[a.variant]++;
+          }
+          if (a.state === 'hidden') seen.delete(i);
+        });
+      }
+    }
+    const total = counts.normal + counts.big + counts.gold;
+    const goldRate = total / counts.gold;
+    const bigRate = total / counts.big;
+    // **実測を報告する。** ずれたら当たりのほうを直すこと（基準は動かさない）
+    expect(total, `${total}回ぶん数えた`).toBeGreaterThan(3000);
+    expect(goldRate, `きんいろは実測 ${goldRate.toFixed(1)}回に1回`).toBeGreaterThan(13);
+    expect(goldRate, `きんいろは実測 ${goldRate.toFixed(1)}回に1回`).toBeLessThan(19);
+    expect(bigRate, `大きいは実測 ${bigRate.toFixed(1)}回に1回`).toBeGreaterThan(17);
+    expect(bigRate, `大きいは実測 ${bigRate.toFixed(1)}回に1回`).toBeLessThan(24);
+  });
+
+  it('引っ込んだら、色も大きさも元に戻る', () => {
+    // **魚は1種につき1匹しか持っていない。** 戻し忘れると、
+    // 次に同じ魚が出たときも金のまま・大きいままになる
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    fish.spawn(0, 0, 1, 'gold');
+    expect(fish.actors[0].variant).toBe('gold');
+    for (let i = 0; i < 60 * 30; i++) {
+      fish.update(1 / 60);
+      if (fish.actors[0].state === 'hidden') break;
+    }
+    expect(fish.actors[0].state).toBe('hidden');
+    expect(fish.actors[0].variant, '金のままになっている').toBe('normal');
+  });
+
+  it('大きいさかなは、出ている時間を変えない（当てやすさは同じ）', () => {
+    // §6-2:「1.4倍で、叩くと星が3つ増える。**出ている時間は同じ**」
+    const a = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    const b = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    a.spawn(0, 0, 1, 'normal');
+    b.spawn(0, 0, 1, 'big');
+    let ta = -1;
+    let tb = -1;
+    for (let i = 0; i < 60 * 30; i++) {
+      a.update(1 / 60);
+      b.update(1 / 60);
+      if (ta < 0 && a.actors[0].state === 'retreating') ta = i;
+      if (tb < 0 && b.actors[0].state === 'retreating') tb = i;
+    }
+    expect(tb).toBe(ta);
   });
 });

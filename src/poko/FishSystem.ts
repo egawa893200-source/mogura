@@ -22,6 +22,7 @@
 
 import * as THREE from 'three';
 
+import { SPECIAL, type FishVariant } from '../data/special';
 import { TIMING } from '../data/timing';
 import type { FishConfig } from '../types';
 import { createProceduralFish, type ProceduralFish } from './ProceduralFish';
@@ -74,6 +75,14 @@ export interface FishActor {
   elapsed: number;
   /** この登場だけの速さの倍率（§6-1。1 より大きいと遅い） */
   speed: number;
+  /**
+   * この登場だけの種類（§6-2）。**大きい と きんいろ は同時に起きない。**
+   *
+   * `Spawner` が出すときに決める。**引っ込んだら必ず `normal` に戻す**
+   * —— 戻し忘れると、次に同じ魚が出たときも金のままになる
+   * （魚は1種につき1匹しか持っていない）
+   */
+  variant: FishVariant;
 }
 
 export class FishSystem {
@@ -112,6 +121,7 @@ export class FishSystem {
         holeIndex: -1,
         elapsed: 0,
         speed: 1,
+        variant: 'normal',
       });
     }
   }
@@ -216,7 +226,12 @@ export class FishSystem {
    * `speed` は §6-1 のばらつき（±10%）。**合計時間は変えない**ので、
    * 速くなったぶんは `Spawner` の待ちで吸収する。
    */
-  spawn(actorIndex: number, holeIndex: number, speed = 1): boolean {
+  spawn(
+    actorIndex: number,
+    holeIndex: number,
+    speed = 1,
+    variant: FishVariant = 'normal'
+  ): boolean {
     const actor = this.actors[actorIndex];
     if (!actor || actor.state !== 'hidden') return false;
     // **まず `calling`。** 声が鳴ってから出てくる
@@ -227,6 +242,10 @@ export class FishSystem {
     actor.holeIndex = holeIndex;
     actor.elapsed = 0;
     actor.speed = speed;
+    // **色は出す前に決める**（§6-2）。`calling` のあいだは見えていないので、
+    // 姿が出た最初の1フレームからきんいろで見える
+    actor.variant = variant;
+    this.shapes[actorIndex]?.setGold(variant === 'gold');
     actor.group.visible = true;
     return true;
   }
@@ -337,6 +356,10 @@ export class FishSystem {
   }
 
   private retire(actor: FishActor): void {
+    // **色と大きさを必ず戻す。** 魚は1種につき1匹しか持っていないので、
+    // 戻し忘れると次に出たときも金のまま・大きいままになる
+    this.shapes[this.actors.indexOf(actor)]?.setGold(false);
+    actor.variant = 'normal';
     actor.state = 'hidden';
     actor.reveal = 0;
     actor.squash = 0;
@@ -360,9 +383,12 @@ export class FishSystem {
     // 出ているあいだ、ゆっくり上下に揺れる（止まって見えないように）
     const y = actor.state === 'up' ? Math.sin(actor.elapsed * 2.2) * BOB : 0;
     actor.group.position.set(x, y, FISH_Z);
-    // 潰れ。**縦に潰して横に広がる**（§4-4 の「形」）
+    // 潰れ。**縦に潰して横に広がる**（§4-4 の「形」）。
+    // **大きいさかな（§6-2）はここで倍率を掛ける** —— 出ている時間も
+    // 当たり判定も変えない（当てやすさは同じで、見た目だけ特別）
+    const big = actor.variant === 'big' ? SPECIAL.bigScale : 1;
     const s = 1 - actor.squash * 0.55;
-    actor.group.scale.set(1 + actor.squash * 0.3, s, 1);
+    actor.group.scale.set(big * (1 + actor.squash * 0.3), big * s, big);
     shape?.setBump(actor.bump);
   }
 
