@@ -16,6 +16,7 @@ import { FishSystem } from '../poko/FishSystem';
 import { HitEffect } from '../poko/HitEffect';
 import { HoleSystem } from '../poko/HoleSystem';
 import { RockSystem } from '../poko/RockSystem';
+import { SurpriseFish } from '../poko/SurpriseFish';
 import { Spawner, seededRandom } from '../poko/Spawner';
 import { createWaterShape, type WaterShape } from '../poko/WaterShape';
 import type { StageConfig } from '../types';
@@ -28,6 +29,8 @@ export class StageRoot {
   readonly fish: FishSystem;
   /** 岩陰のばあ（§4-8）。岩を置いていないステージでは中身が空 */
   readonly rocks: RockSystem;
+  /** サプライズ（§6-3）。画面の下から大きく1匹 */
+  readonly surprise: SurpriseFish;
   readonly spawner: Spawner;
   readonly effect: HitEffect;
   /** しぶきの散りかた。**遊びの乱数は独立したシードから引く**（§4-2） */
@@ -43,6 +46,7 @@ export class StageRoot {
     holes: HoleSystem,
     fish: FishSystem,
     rocks: RockSystem,
+    surprise: SurpriseFish,
     spawner: Spawner,
     effect: HitEffect,
     waters: WaterShape[],
@@ -53,6 +57,7 @@ export class StageRoot {
     this.holes = holes;
     this.fish = fish;
     this.rocks = rocks;
+    this.surprise = surprise;
     this.spawner = spawner;
     this.effect = effect;
     this.waters = waters;
@@ -63,6 +68,8 @@ export class StageRoot {
     // 岩は水たまりと同じ層。**魚は岩より手前（+z）へ突き出す**ので、
     // ここで前後を分ける必要は無い
     this.group.add(rocks.group);
+    // サプライズは**いちばん手前**（`SURPRISE.z`）。押す相手がこれだと分かるように
+    this.group.add(surprise.group);
     // しぶきは**水たまりより手前**。奥だと水面に隠れて1粒も見えない
     // （「ばあ！」で足あとを置いて見えなかったのと同じ失敗）
     this.effect.group.position.z = 0.3;
@@ -204,8 +211,22 @@ export class StageRoot {
     // しぶきは水の色。**白い粒にしない**（うみ では背景に溶ける）
     const effect = new HitEffect(config.water[0]);
 
+    // ==================================================================
+    // サプライズ（§6-3）。**岩と同じ種を使う。**
+    // モデルは3体しかなく、水たまりの2種と同じ `.glb` を使うと
+    // 「同じ魚を2色に塗った」に見える。岩と同時に出ないよう、
+    // `update()` が「岩が隠れているか」を見て始める
+    // ==================================================================
+    const surprise = new SurpriseFish(
+      rockFishConfig,
+      rockFishConfig ? (models.get(rockFishConfig.id) ?? null) : null,
+      rockFishConfig ? (skins.get(rockFishConfig.id) ?? null) : null,
+      // **独立した種から引く**（§4-2。共有の乱数に相乗りしない）
+      seededRandom(0x3f7a19c5)
+    );
+
     const root = new StageRoot(
-      config, holes, fish, rocks, spawner, effect, waters, ambient, parts, disposables
+      config, holes, fish, rocks, surprise, spawner, effect, waters, ambient, parts, disposables
     );
     root.video = video;
     return root;
@@ -232,10 +253,16 @@ export class StageRoot {
    */
   update(dt: number, elapsed: number): void {
     for (const water of this.waters) water.update(elapsed);
+    // **サプライズが出ているあいだは新しい魚を出さない**（§6-3）。
+    // 覆われて見えない魚が下の段に出るのを防ぐ（`Spawner.setHeld()` を読むこと）
+    const st = this.surprise.state;
+    this.spawner.setHeld(st === 'calling' || st === 'rising' || st === 'out');
     this.spawner.update(dt, this.fish);
     this.fish.update(dt);
     // 岩陰のばあ（§4-8）。**抽選はしない** —— 押したときだけ出る
     this.rocks.update(dt);
+    // サプライズ（§6-3）。**岩が隠れているときだけ始める**（同じ種なので）
+    this.surprise.update(dt, this.rocks.state === 'hidden');
     this.effect.update(
       dt,
       this.holes.runtimes.map((r) => r.group)
@@ -256,6 +283,7 @@ export class StageRoot {
     this.effect.dispose();
     this.fish.dispose();
     this.rocks.dispose();
+    this.surprise.dispose();
     for (const water of this.waters) water.dispose();
     for (const item of this.disposables) item.dispose();
   }

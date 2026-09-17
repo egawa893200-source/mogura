@@ -216,6 +216,62 @@ body {
   filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.55));
 }
 
+/* --- 保護者用パネル（ゲートの奥）--------------------------------------- */
+
+/*
+ * **閉じているあいだ DOM に何も無い**ので、遊びの当たり判定と取り合わない
+ * （§3-4 の事故を作らない）。開いているあいだだけ `pointer-events: auto`。
+ */
+.parent-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: auto;
+  background: rgba(8, 16, 30, 0.86);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  padding: calc(16px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
+  font-family: system-ui, -apple-system, sans-serif;
+  overflow-y: auto;
+}
+
+.parent-panel__title {
+  color: #9fb4cc;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.parent-panel__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.parent-panel__button {
+  /* **指で押せる大きさにする**（大人向けでも、片手で操作するので） */
+  min-width: 88px;
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid #40597a;
+  border-radius: 10px;
+  background: #1b2c45;
+  color: #e6eefa;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.parent-panel__button.is-current {
+  border-color: #7fc8ff;
+  background: #24405f;
+}
+
+.parent-panel__close {
+  align-self: center;
+  margin-top: 8px;
+}
+
 /* --- ペアレンタルゲート（§2）------------------------------------------- */
 
 .gate__hotspot {

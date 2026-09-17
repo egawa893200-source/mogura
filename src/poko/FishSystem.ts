@@ -385,8 +385,13 @@ export class FishSystem {
     actor.group.position.set(x, y, FISH_Z);
     // 潰れ。**縦に潰して横に広がる**（§4-4 の「形」）。
     // **大きいさかな（§6-2）はここで倍率を掛ける** —— 出ている時間も
-    // 当たり判定も変えない（当てやすさは同じで、見た目だけ特別）
-    const big = actor.variant === 'big' ? SPECIAL.bigScale : 1;
+    // 当たり判定も変えない（当てやすさは同じで、見た目だけ特別）。
+    // **高さに上限を掛ける** —— 倍率だけだと、元から大きいエイが暴れる
+    const baseHeight = shape?.height ?? 0;
+    const big =
+      actor.variant === 'big'
+        ? Math.min(SPECIAL.bigScale, baseHeight > 0 ? SPECIAL.bigMaxHeight / baseHeight : SPECIAL.bigScale)
+        : 1;
     const s = 1 - actor.squash * 0.55;
     actor.group.scale.set(big * (1 + actor.squash * 0.3), big * s, big);
     shape?.setBump(actor.bump);

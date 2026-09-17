@@ -19,12 +19,13 @@ import { Renderer } from '../core/Renderer';
 import { ScreenProjector } from '../core/ScreenProjector';
 import { WakeLock } from '../core/WakeLock';
 import { LIGHTS } from '../data/look';
-import { SPECIAL } from '../data/special';
+import { SPECIAL, SURPRISE } from '../data/special';
 import { STAGES, findStage } from '../data/stages';
 import { StageRoot } from '../scene/StageRoot';
 import { VideoLayer } from '../scene/VideoLayer';
 import { ParentalGate } from '../ui/ParentalGate';
 import { Ripple } from '../ui/Ripple';
+import { ParentPanel } from '../ui/ParentPanel';
 import { Score } from '../ui/Score';
 import type { StageId } from '../types';
 
@@ -50,6 +51,8 @@ export class App {
   private readonly gate: ParentalGate;
   /** やさしい得点（§4-6）。**減らない・終わらない** */
   private readonly score: Score;
+  /** 保護者用パネル（ゲートの奥）。**遊びの画面には出ない** */
+  private readonly parentPanel: ParentPanel;
   private readonly videoLayer: VideoLayer;
   private readonly audio = new AudioBus();
   private readonly assets = new AssetLoader();
@@ -81,6 +84,10 @@ export class App {
   private wasRockCalling = false;
   /** 岩を押した回数。E2E が「押したら必ず反応する」を見る */
   private rockTapCount = 0;
+  /** サプライズが `calling` に入った瞬間を拾うため（§6-3） */
+  private wasSurpriseCalling = false;
+  /** サプライズを押した回数 */
+  private surpriseTapCount = 0;
 
   constructor(elements: AppElements) {
     this.renderer = new Renderer(elements.webglLayer);
@@ -106,9 +113,20 @@ export class App {
     this.score = new Score(elements.uiRoot);
     this.score.onFlower = () => this.beginStageChange();
     this.videoLayer = new VideoLayer(elements.backgroundLayer);
-    this.gate.onUnlock(() => {
-      // TODO(Phase 7): 音量とステージのリセットを出す
+    // ==================================================================
+    // ゲートの奥（2026-09-17、人間の指示）。
+    // **スマホでも特別な魚を確実に出せる口**が要る。
+    // `__poko.forceVariant()` は開発者コンソールが必要で、スマホから
+    // 打てなかった。子どもには届かない（2秒長押し＋3択）
+    // ==================================================================
+    this.parentPanel = new ParentPanel(elements.uiRoot, {
+      forceVariant: (v) => this.stageRoot?.spawner.forceNext(v),
+      forceSurprise: () => this.stageRoot?.surprise.forceNow(),
+      setStage: (id) => void this.loadStage(id),
+      currentStage: () => this.stageId,
+      stages: () => STAGES.map((st) => ({ id: st.id, label: st.label })),
     });
+    this.gate.onUnlock(() => this.parentPanel.open());
 
     // 光。**数値は `data/look.ts` に外出ししてある**
     const key = new THREE.DirectionalLight(LIGHTS.key.color, LIGHTS.key.intensity);
@@ -135,6 +153,7 @@ export class App {
       // **岩は水たまりの円を測ったあとに測る。** 岩の当たり判定は
       // 水たまりの円に食い込まないところまで縮むので、先に水たまりが要る
       this.stageRoot?.rocks.measure(this.projector, this.stageRoot.holes);
+      this.stageRoot?.surprise.measure(this.projector);
       // **更新時計を渡す。壁時計を読まない**（§11-4）
       this.stageRoot?.update(ctx.dt, this.loop.simulatedSeconds);
       this.speakOnRise();
@@ -200,6 +219,18 @@ export class App {
     this.ripple.spawn(screenX, screenY);
 
     const root = this.stageRoot;
+
+    // ==================================================================
+    // **サプライズを、いちばん先に見る**（§6-3）。
+    // いちばん手前に大きく出ているので、そこを押したら**それが的**。
+    // 後ろの水たまりに取られると「見えている魚を押したのに違うものが
+    // 反応する」になる（§3-4 の事故と同じ形）
+    // ==================================================================
+    if (root && root.surprise.hitTest(screenX, screenY)) {
+      this.onSurpriseTap(root);
+      return;
+    }
+
     const hole = root?.holes.pick(screenX, screenY) ?? null;
 
     // ==================================================================
@@ -276,6 +307,30 @@ export class App {
   }
 
   /**
+   * サプライズを叩いた（§6-3）。**必ず何かを返す**（不変条件1）。
+   *
+   * **0フレーム原則**（§4-3）。`hit()` の中で潰れが始まり、音もここで鳴る。
+   * 「ばあっ！」だけは `speakOnRise()` が鳴らす（姿が出る前に声を出すため）。
+   */
+  private onSurpriseTap(root: StageRoot): void {
+    this.surpriseTapCount++;
+    const scored = root.surprise.hit();
+    _hitAt.set(SURPRISE.x, SURPRISE.outY, SURPRISE.z);
+    root.effect.splash(_hitAt, scored, root.rng);
+    root.effect.hammer(_hitAt);
+    if (!scored) {
+      this.audio.playOneShot('bubble');
+      return;
+    }
+    this.fishHitCount++;
+    this.audio.playOneShot('plop');
+    this.audio.playVoice('ite');
+    this.voiceLog.push({ clip: 'ite', at: this.loop.simulatedSeconds });
+    // **★が5つ**（§6-3）。いちばん大きい見返り
+    for (let i = 0; i < SURPRISE.stars; i++) this.score.add();
+  }
+
+  /**
    * 花が咲いた（★10個）。**ステージを入れ替える準備を始める**（§5-3）。
    *
    * ========================================================================
@@ -318,6 +373,10 @@ export class App {
     if (!root) return;
     if (root.fish.countActive() > 0) return;
     if (root.rocks.state !== 'hidden') return;
+    // **サプライズも引っ込みきるまで待つ**（§6-3）。岩と同じ理由で、
+    // 画面でいちばん大きいものが入れ替えで消えると
+    // 「いま見ていたものが無くなった」になる
+    if (root.surprise.state !== 'hidden') return;
 
     // **2ステージしか無いので、交互に行き来するだけ**（§5-3）
     const next = STAGES.find((s) => s.id !== this.stageId) ?? STAGES[0];
@@ -399,6 +458,13 @@ export class App {
 
     // **岩の魚も同じ列に並べる**（§4-8）。別に鳴らすと、水たまりの魚と
     // 同じフレームで重なる（`voiceBusyUntil` に任せると片方が落ちる）
+    // サプライズも同じ列に並べる（§6-3。声が重ならないように）
+    const surpriseCalling = root.surprise.state === 'calling';
+    if (surpriseCalling && !this.wasSurpriseCalling) {
+      this.pendingBaa.push({ actor: -2, at: now + this.pendingBaa.length * 0.12 });
+    }
+    this.wasSurpriseCalling = surpriseCalling;
+
     const rockCalling = root.rocks.state === 'calling';
     if (rockCalling && !this.wasRockCalling) {
       this.pendingBaa.push({ actor: -1, at: now + this.pendingBaa.length * 0.12 });
@@ -461,12 +527,25 @@ export class App {
             childScale,
           };
         }),
-      getHittableCount: () => this.stageRoot?.fish.countHittable() ?? 0,
+      // **サプライズも数える**（§6-3）。出ているあいだは水たまりに新しい魚を
+      // 出さない（覆ってしまうため）ので、数えないと不変条件4c が
+      // 「叩ける相手が 0」に見える。実際には画面でいちばん大きい的が出ている
+      getHittableCount: () =>
+        (this.stageRoot?.fish.countHittable() ?? 0) +
+        (this.stageRoot?.surprise.isHittable() ? 1 : 0),
       /** 岩（§4-8）。画面座標と当たり半径。**水たまりと重ならない**ことを見る */
       getRocks: () => this.stageRoot?.rocks.describe() ?? [],
       getRockTapCount: () => this.rockTapCount,
+      /** サプライズ（§6-3）。画面座標と当たり半径、いまの様子 */
+      getSurprise: () => this.stageRoot?.surprise.describe() ?? null,
+      getSurpriseTapCount: () => this.surpriseTapCount,
+      /** サプライズをすぐ出す（開発と E2E 用。22〜34秒 待たないため） */
+      forceSurprise: () => this.stageRoot?.surprise.forceNow(),
       /** 得点（§4-6）。**数字は画面に出さない**ので、確認はここから */
       getScore: () => this.score.describe(),
+      /** 保護者用パネルが開いているか（E2E 用） */
+      isParentPanelOpen: () => this.parentPanel.isOpen(),
+      openParentPanel: () => this.parentPanel.open(),
       /**
        * 次に出る1匹の種類を決め打ちする（§6-2）。
        * **16回に1回・20回に1回を待たずに実機で見るための口。**

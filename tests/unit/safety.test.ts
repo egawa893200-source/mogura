@@ -20,7 +20,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 
 import { FISH, SPARE_FISH, findFish } from '../../src/data/fish';
-import { SPECIAL, pickVariant } from '../../src/data/special';
+import { SPECIAL, SURPRISE, pickVariant } from '../../src/data/special';
 import { STAGES, findStage } from '../../src/data/stages';
 import { ASSIST, MAX_UP_FISH, ROCK_TIMING, TIMING } from '../../src/data/timing';
 import { FishSystem } from '../../src/poko/FishSystem';
@@ -30,7 +30,8 @@ import {
   HIDE_LIFT as ROCK_HIDE_LIFT,
   RockSystem,
 } from '../../src/poko/RockSystem';
-import { Spawner } from '../../src/poko/Spawner';
+import { Spawner, seededRandom } from '../../src/poko/Spawner';
+import { SurpriseFish } from '../../src/poko/SurpriseFish';
 import { STARS_PER_FLOWER } from '../../src/ui/Score';
 import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
 
@@ -1316,5 +1317,191 @@ describe('特別な魚（§6-2）', () => {
       if (tb < 0 && b.actors[0].state === 'retreating') tb = i;
     }
     expect(tb).toBe(ta);
+  });
+});
+
+
+/**
+ * サプライズ（§6-3）— 画面の下から大きく1匹
+ *
+ * ==========================================================================
+ * **絵に重ねて測ってから書いた**（2026-09-17）。
+ * 芯の1点を投影して円で見ていたころは、エイ（横 302px・縦 224px の平たい魚）の
+ * **右の翼が円の外**に出ていて、見えているのに叩けなかった。
+ * ここに置いてあるのは、そのとき測った数値そのもの。
+ * ==========================================================================
+ */
+describe('サプライズ（§6-3）', () => {
+  const rockFish = () => findFish(STAGES[0].rockFish!)!;
+  /** 出てくるまで進める。**壁時計を読まない**（更新時計だけ） */
+  function runUntil(
+    fish: SurpriseFish,
+    want: (f: SurpriseFish) => boolean,
+    maxSec = 120,
+    rockHidden = true
+  ): number {
+    for (let i = 0; i < maxSec * 60; i++) {
+      fish.update(1 / 60, rockHidden);
+      if (want(fish)) return i / 60;
+    }
+    return -1;
+  }
+
+  it('時計で出る。間隔は 22〜34秒（叩いた数に依らない）', () => {
+    // **抽選ではなく時計**（`data/special.ts`）。出現数に紐づけると、
+    // よく叩く子ほどサプライズが増えて「大きいのが普通」になる
+    const fish = new SurpriseFish(rockFish(), null, null, seededRandom(0x3f7a19c5));
+    let last = 0;
+    let elapsed = 0;
+    const gaps: number[] = [];
+    for (let i = 0; i < 60 * 60 * 5; i++) {
+      const before = fish.count;
+      fish.update(1 / 60, true);
+      elapsed += 1 / 60;
+      if (fish.count > before) {
+        gaps.push(elapsed - last);
+        last = elapsed;
+      }
+    }
+    expect(gaps.length, `5分で ${gaps.length}回`).toBeGreaterThan(5);
+    for (const gap of gaps) {
+      // 前の1周（出て沈むまで）のぶん、間隔は待ち時間より長くなる
+      expect(gap).toBeGreaterThanOrEqual(SURPRISE.minGapSec);
+      expect(gap).toBeLessThanOrEqual(
+        SURPRISE.maxGapSec +
+          SURPRISE.callSec +
+          SURPRISE.riseSec +
+          SURPRISE.outSec +
+          SURPRISE.sinkSec +
+          0.1
+      );
+    }
+  });
+
+  it('岩の魚が出ているあいだは始まらない。ただし時計は進む', () => {
+    // **同じ種を使っている**ので、2匹同時に出ると「同じ魚が2箇所」になる。
+    // 時計まで止めると、岩をよく押す子にはサプライズが永遠に来ない
+    const fish = new SurpriseFish(rockFish(), null, null, seededRandom(1));
+    const held = runUntil(fish, (f) => f.state !== 'hidden', 60, false);
+    expect(held, '岩が出ているのに始まった').toBe(-1);
+    // 岩が引っ込んだ瞬間に出る（時計は溜まっている）
+    fish.update(1 / 60, true);
+    expect(fish.state).toBe('calling');
+  });
+
+  it('出はじめから沈みきるまで、どのフレームでも叩ける（不変条件2）', () => {
+    // **「アニメーション中だから無視」は禁止。** 「ばあ！」の貝で
+    // 連打すると開閉が一度も完了せず、開き量の最大が 0.037 だった
+    const fish = new SurpriseFish(rockFish(), null, null, seededRandom(2));
+    fish.forceNow();
+    runUntil(fish, (f) => f.state === 'rising');
+    const p = project(412, 839);
+    let frames = 0;
+    for (let i = 0; i < 60 * 10; i++) {
+      fish.update(1 / 60, true);
+      if (fish.state === 'hidden') break;
+      fish.measure(p);
+      // **姿が出ているあいだは必ず叩ける**（芯を押した場合）
+      const d = fish.describe();
+      expect(fish.hitTest(d.x, d.y), `${fish.state} で押せない`).toBe(true);
+      frames++;
+    }
+    expect(frames, '一度も出なかった').toBeGreaterThan(60);
+  });
+
+  it('叩いたら、その場で潰れが始まる（0フレーム原則・§4-3）', () => {
+    const fish = new SurpriseFish(rockFish(), null, null, seededRandom(3));
+    fish.forceNow();
+    runUntil(fish, (f) => f.state === 'out');
+    expect(fish.squash).toBe(0);
+    expect(fish.hit()).toBe(true);
+    // **`update()` を待たない**
+    expect(fish.squash).toBeGreaterThan(0);
+    expect(fish.state).toBe('hit');
+  });
+
+  it('隠れているあいだは、タップを横取りしない', () => {
+    // サプライズは**タップの列でいちばん先**に見られる（`App.onTap`）。
+    // 隠れているのに当たると、水たまりが押せなくなる
+    const fish = new SurpriseFish(rockFish(), null, null, seededRandom(4));
+    fish.measure(project(412, 839));
+    expect(fish.hitTest(206, 700)).toBe(false);
+    expect(fish.hit()).toBe(false);
+  });
+
+  for (const [name, width, height] of DEVICES) {
+    it(`${name} ${width}×${height} で、当たり楕円が下の段より上の水たまりを取らない`, () => {
+      // ==================================================================
+      // **下の段は覆う。** 画面の下から大きく出るので、下の段の真上に来る
+      // （実測 412×839 で、下の段の芯は楕円の内側 0.32 / 0.63）。
+      // そこは `Spawner.setHeld()` で魚を出さないことで塞いである。
+      // **上の段まで取ってはいけない** —— 覆っていないのに押しを奪うと、
+      // 「見えている魚を押したのに違うものが反応する」になる
+      // ==================================================================
+      const holes = new HoleSystem(STAGES[0]);
+      const p = project(width, height);
+      holes.measure(p);
+      const spots = holes.describe();
+      const fish = new SurpriseFish(rockFish(), null, null, seededRandom(5));
+      fish.forceNow();
+      for (let i = 0; i < 60 * 60; i++) {
+        fish.update(1 / 60, true);
+        if (fish.state === 'out') break;
+      }
+      expect(fish.state).toBe('out');
+      fish.measure(p);
+      const d = fish.describe();
+      // 下の段（画面のいちばん下）以外は、芯が楕円の外にあること
+      const bottom = Math.max(...spots.map((s) => s.y));
+      for (const spot of spots) {
+        if (Math.abs(spot.y - bottom) < 1) continue;
+        const t = Math.hypot((spot.x - d.x) / d.rx, (spot.y - d.y) / d.ry);
+        expect(t, `${spot.id} が楕円の中（${t.toFixed(2)}）`).toBeGreaterThan(1);
+      }
+    });
+  }
+
+  it('当たり楕円の中心が、見かけの体の中心と一致する', () => {
+    // **芯の1点を投影するだけでは足りない**（2026-09-17、絵で測った）。
+    // 体の世界の境界箱を投影して、その矩形の中心で見ること
+    const fish = new SurpriseFish(rockFish(), null, null, seededRandom(6));
+    fish.forceNow();
+    for (let i = 0; i < 60 * 60; i++) {
+      fish.update(1 / 60, true);
+      if (fish.state === 'out') break;
+    }
+    const p = project(412, 839);
+    fish.measure(p);
+    const d = fish.describe();
+    // 体は画面の中ほどより下（下から出てくるので）
+    expect(d.y).toBeGreaterThan(839 * 0.5);
+    // **平たい魚を円で見ない。** 横と縦が別に測れていること
+    expect(d.rx).toBeGreaterThan(40);
+    expect(d.ry).toBeGreaterThan(40);
+  });
+
+  it('サプライズが出ているあいだ、水たまりに新しい魚を出さない', () => {
+    // 覆われて見えない魚が下の段に出るのを防ぐ（`Spawner.setHeld()`）
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    const spawner = new Spawner(6);
+    spawner.setHeld(true);
+    for (let i = 0; i < 60 * 10; i++) spawner.update(1 / 60, fish);
+    expect(fish.countActive(), '止めているのに出た').toBe(0);
+    // **解けば出る**（止めっぱなしにならないこと）
+    spawner.setHeld(false);
+    for (let i = 0; i < 60 * 10; i++) spawner.update(1 / 60, fish);
+    expect(fish.countActive()).toBeGreaterThan(0);
+  });
+
+  it('止めかたが2つあっても、片方を解いたらもう片方まで解けない', () => {
+    // **1つの旗を2箇所から立てると、サプライズが終わった瞬間に
+    // 入れ替え待ちの停止まで解けて、入れ替えが永遠に終わらない**
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    const spawner = new Spawner(6);
+    spawner.setPaused(true);
+    spawner.setHeld(true);
+    spawner.setHeld(false);
+    for (let i = 0; i < 60 * 10; i++) spawner.update(1 / 60, fish);
+    expect(fish.countActive(), '入れ替え待ちの停止が解けている').toBe(0);
   });
 });
