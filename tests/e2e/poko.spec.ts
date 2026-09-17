@@ -61,6 +61,7 @@ declare global {
       forceSurprise(): void;
       isParentPanelOpen(): boolean;
       openParentPanel(): void;
+      getAudio(): { muted: boolean; volume: number };
       getRockFish(): {
         id: string | null;
         state: string;
@@ -839,41 +840,51 @@ test.describe('サプライズ（§6-3）— 画面の下から大きく1匹', (
   });
 
   test('出ている途中に連打しても、必ず反応が返る（不変条件1・2）', async ({ page }) => {
-    // **「アニメーション中だから無視」は禁止**（不変条件2）
+    // ==================================================================
+    // **「アニメーション中だから無視」は禁止**（不変条件2）。
+    //
+    // **押す場所を「いまの芯」から決めない**（2026-09-17、3回書き直した）。
+    // 体は 560px/秒 で上がってくるうえ、`describe()` が返すのは
+    // **1フレーム前**の位置（`measure()` は `update()` の前に走る）。
+    // そこへ evaluate と click の往復（重い環境では 200ms 超）が乗るので、
+    // 測ってから押すまでに体が 100px 以上ずれる。
+    // 「押す直前に測り直す」でも、**重い日は6回とも外した**。
+    //
+    // **出きったときの楕円の下のほう**を狙えば、ずれても当たる ——
+    // 上がってくる途中から出きるまで、その1点はずっと体の中にある。
+    // ==================================================================
     await boot(page);
-    await page.evaluate(() => window.__poko.forceSurprise());
-    await page.waitForFunction(() => window.__poko.getSurprise()?.state === 'rising', null, {
+    const size = page.viewportSize()!;
+    // まず1周ぶん出して、出きったときの楕円を測る（そこが動かない的）
+    const out = await popSurprise(page);
+    const target = { x: out.x, y: Math.min(out.y + out.ry * 0.9, size.height - 10) };
+    await page.waitForFunction(() => window.__poko.getSurprise()?.state === 'hidden', null, {
       timeout: 60_000,
     });
-    // ==================================================================
-    // **出はじめは、体の芯がまだ画面の外にある**（下から出てくるので）。
-    // 芯をそのまま押すと画面の外を押すことになり、**タップが1回も届かない**
-    // （最初にそう書いて `getTapCount()` が 0 のままだった）。
-    // 体の上端が画面に入るまで待ってから、楕円の内側を押す
-    // ==================================================================
-    const size = page.viewportSize()!;
+
+    // もう一度出して、**出ている途中**に連打する
+    await page.evaluate(() => window.__poko.forceSurprise());
     await page.waitForFunction(
       (h) => {
         const s = window.__poko.getSurprise();
         if (!s) return false;
-        if (s.state !== 'rising' && s.state !== 'out') return false;
+        if (s.state !== 'rising') return false;
         return s.y - s.ry < h - 60;
       },
       size.height,
       { timeout: 60_000 }
     );
     const before = await page.evaluate(() => window.__poko.getTapCount());
-    // **押す直前に測り直す。** 出てくる速さは 560px/秒 あるので、
-    // 1回目の座標で6回押すと、2回目以降は体がもう上へ抜けている
-    // （実際にそう書いて、6回とも楕円の外だった）
-    for (let i = 0; i < 6; i++) {
-      const s = (await page.evaluate(() => window.__poko.getSurprise()))!;
-      await page.mouse.click(s.x, Math.min(s.y, size.height - 10));
-    }
+    const taps = await page.evaluate(() => window.__poko.getSurpriseTapCount());
+    for (let i = 0; i < 6; i++) await page.mouse.click(target.x, target.y);
     const after = await page.evaluate(() => window.__poko.getTapCount());
     expect(after - before, '連打が落ちている').toBe(6);
-    // **1回目で受けている**（出ている途中でも叩ける）
-    expect(await page.evaluate(() => window.__poko.getSurpriseTapCount())).toBeGreaterThan(0);
+    // **出ている途中でも受けている**（引っ込んでからでは意味がない）
+    const state = await page.evaluate(() => window.__poko.getSurprise());
+    expect(
+      await page.evaluate(() => window.__poko.getSurpriseTapCount()),
+      `連打が1回も当たっていない（${state?.state}）`
+    ).toBeGreaterThan(taps);
   });
 });
 
@@ -958,5 +969,73 @@ test.describe('おとなの画面（ペアレンタルゲートの奥）', () =>
     const before = await page.evaluate(() => window.__poko.getTapCount());
     await page.getByRole('button', { name: 'とじる' }).click();
     expect(await page.evaluate(() => window.__poko.getTapCount())).toBe(before);
+  });
+});
+
+test.describe('Phase 7 の仕上げ（おと / さいしょから）', () => {
+  test('おとなの画面で「なし」を選ぶと音が止まり、「ふつう」で戻る', async ({ page }) => {
+    // **子どもの手が届くところに音量を置かない**（不変条件5）。
+    // ゲートの奥（2秒長押し＋3択）にだけ置く
+    await boot(page);
+    await page.evaluate(() => window.__poko.openParentPanel());
+    await page.getByRole('button', { name: 'なし' }).click();
+    expect((await page.evaluate(() => window.__poko.getAudio())).muted).toBe(true);
+
+    await page.evaluate(() => window.__poko.openParentPanel());
+    await page.getByRole('button', { name: 'ふつう' }).click();
+    const after = await page.evaluate(() => window.__poko.getAudio());
+    expect(after.muted).toBe(false);
+    expect(after.volume).toBeGreaterThan(0);
+  });
+
+  test('「さいしょから」で★が 0 に戻り、最初のステージになる', async ({ page }) => {
+    await boot(page);
+    // **★は叩かないと増えない。** 最初に書いたときは きんいろ を出すだけで
+    // 花を待ってしまい、誰も叩かないので 60秒 待って落ちた
+    await page.evaluate(() => window.__poko.setStage('umi'));
+    await page.waitForFunction(
+      () => window.__poko.getStageId() === 'umi' && window.__poko.getHoles().length === 6
+    );
+    const hole = await page.evaluate(async () => {
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 30) {
+        const f = window.__poko.getFish().find((f) => f.state === 'up');
+        if (f) return window.__poko.getHoles()[f.holeIndex];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return null;
+    });
+    expect(hole, '魚が出てこない').not.toBeNull();
+    await page.mouse.click(hole!.x, hole!.y);
+    await expect.poll(() => page.evaluate(() => window.__poko.getScore().stars)).toBeGreaterThan(0);
+
+    await page.evaluate(() => window.__poko.openParentPanel());
+    await page.getByRole('button', { name: 'さいしょから' }).click();
+    await expect
+      .poll(() => page.evaluate(() => window.__poko.getScore()))
+      .toEqual({ stars: 0, flowers: 0 });
+    // **ステージの読み込みは非同期**。`getHoles().length === 6` は
+    // 前のステージでも満たされるので、id が変わるところまで待つ
+    await page.waitForFunction(
+      () => window.__poko.getStageId() === 'ike' && window.__poko.getHoles().length === 6,
+      null,
+      { timeout: 30_000 }
+    );
+    expect(await page.evaluate(() => window.__poko.getStageId())).toBe('ike');
+  });
+
+  test('「さいしょから」のあとも、押したら反応が返る（不変条件1）', async ({ page }) => {
+    // **リセットは遊びを壊さない。** 入れ替え待ちも解けていること
+    await boot(page);
+    await page.evaluate(() => window.__poko.openParentPanel());
+    await page.getByRole('button', { name: 'さいしょから' }).click();
+    await page.waitForFunction(() => window.__poko.getHoles().length === 6);
+    const before = await page.evaluate(() => window.__poko.getTapCount());
+    await page.mouse.click(206, 500);
+    await expect.poll(() => page.evaluate(() => window.__poko.getTapCount())).toBe(before + 1);
+    // 魚もまた出てくる
+    await page.waitForFunction(() => window.__poko.getHittableCount() > 0, null, {
+      timeout: 60_000,
+    });
   });
 });

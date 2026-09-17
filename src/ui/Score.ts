@@ -91,6 +91,19 @@ export class Score {
     this.onFlower?.();
   }
 
+  /**
+   * ★も花も 0 に戻す（Phase 7。おとなの画面の「さいしょから」）。
+   *
+   * **遊びの最中には呼ばれない。** 減ることがあるのはここだけで、
+   * 不変条件11（叩いたのに減らない）は大人が明示的に押したときの例外。
+   * **花が咲いた合図（`onFlower`）は出さない** —— 出すとステージが替わる
+   */
+  reset(): void {
+    this.stars = 0;
+    this.flowers = 0;
+    this.render();
+  }
+
   /** 開発と E2E 用 */
   describe(): { stars: number; flowers: number } {
     return { stars: this.stars, flowers: this.flowers };

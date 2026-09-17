@@ -24,6 +24,8 @@ const DURATION_MS = 500;
 /** CSS 側の .ripple の幅と揃える */
 const MAX_DIAMETER_PX = 220;
 
+import { prefersReducedMotion } from '../core/Motion';
+
 export class Ripple {
   private readonly pool: HTMLDivElement[] = [];
   private next = 0;
@@ -32,7 +34,9 @@ export class Ripple {
   private fullscreen: HTMLDivElement | null = null;
 
   constructor(private readonly container: HTMLElement) {
-    this.reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    // **共通の口を通す**（`core/Motion.ts`）。ここだけ自前で読んでいたせいで、
+    // あとから足した効果が同じ指定を見ていなかった
+    this.reduced = prefersReducedMotion();
 
     for (let i = 0; i < POOL_SIZE; i++) {
       const el = document.createElement('div');

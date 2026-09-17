@@ -15,6 +15,8 @@
 
 import * as THREE from 'three';
 
+import { prefersReducedMotion } from '../core/Motion';
+
 /** しぶきの粒の数（1回ぶん） */
 const SPLASH_COUNT = 8;
 /** 外したときの粒の数（§4-5。当たりより控えめ） */
@@ -23,6 +25,15 @@ const MISS_COUNT = 3;
 const SPLASH_SEC = 0.5;
 /** 揺れの角度（度）と長さ（秒）。**全画面は揺らさない** */
 const SHAKE_DEG = 2.5;
+/**
+ * 「動きを減らして」と指定されているときの弱めかた（不変条件6）。
+ *
+ * **反応は消さない。** 粒も揺れも 0 にはしない —— 叩いた手応えが無くなると
+ * 「押したのに何も起きない」と同じになる（不変条件1）。**弱めるだけ**
+ */
+const REDUCED_SPLASH = 3;
+const REDUCED_MISS = 2;
+const REDUCED_SHAKE_DEG = 1;
 const SHAKE_SEC = 0.15;
 
 /**
@@ -55,7 +66,11 @@ export class HitEffect {
   private hammerLeft = 0;
   private readonly hammerParts: { dispose(): void }[] = [];
 
-  constructor(color: string) {
+  /** 動きを弱めるか（不変条件6）。**`Ripple` と同じ指定を見る** */
+  private readonly reduced: boolean;
+
+  constructor(color: string, reduced = prefersReducedMotion()) {
+    this.reduced = reduced;
     // **粒は最初に作って使い回す。** 叩くたびに作ると、連打でゴミが出る
     this.geometry = new THREE.SphereGeometry(0.5, 6, 4);
     this.material = new THREE.MeshBasicMaterial({
@@ -79,7 +94,13 @@ export class HitEffect {
    * **空振りでも必ず何かを返す**（不変条件1・3b）。数を減らすだけ。
    */
   splash(at: THREE.Vector3, strong: boolean, rng: () => number): void {
-    const count = strong ? SPLASH_COUNT : MISS_COUNT;
+    const count = this.reduced
+      ? strong
+        ? REDUCED_SPLASH
+        : REDUCED_MISS
+      : strong
+        ? SPLASH_COUNT
+        : MISS_COUNT;
     let spawned = 0;
     for (const drop of this.drops) {
       if (spawned >= count) break;
@@ -194,7 +215,8 @@ export class HitEffect {
       this.shakes.set(index, next);
       // 減衰しながら1往復半。**全画面ではなくこの水たまりだけ**
       const t = next / SHAKE_SEC;
-      group.rotation.z = THREE.MathUtils.degToRad(SHAKE_DEG) * t * Math.sin(t * Math.PI * 3);
+      const deg = this.reduced ? REDUCED_SHAKE_DEG : SHAKE_DEG;
+      group.rotation.z = THREE.MathUtils.degToRad(deg) * t * Math.sin(t * Math.PI * 3);
     }
   }
 

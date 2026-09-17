@@ -75,7 +75,7 @@ export class App {
   /** 声を鳴らした記録。E2E が「役割を混ぜていない」ことを見る */
   private readonly voiceLog: { clip: string; at: number }[] = [];
   /** 「ばあっ！」をまだ鳴らしていない魚。0.12秒ずらして鳴らす（§4-4） */
-  private readonly pendingBaa: { actor: number; at: number }[] = [];
+  private readonly pendingBaa: { actor: number; at: number; pitch: number }[] = [];
   /** 前に声を鳴らした更新時刻。**声どうしを 0.12秒 空ける**ために見る */
   private lastVoiceAt = -1;
   /** どの魚が `calling` に入ったかを覚えておく（入った瞬間だけ鳴らす） */
@@ -130,6 +130,20 @@ export class App {
       setStage: (id) => void this.loadStage(id),
       currentStage: () => this.stageId,
       stages: () => STAGES.map((st) => ({ id: st.id, label: st.label })),
+      volume: () => (this.audio.isMuted() ? 0 : this.audio.getVolume()),
+      // **0 は消音として扱う。** `setVolume(0)` だけだと、次に音を出す経路が
+      // `muted` を見ているので「小さいだけ」にならない回がある
+      setVolume: (v) => {
+        this.audio.setMuted(v <= 0);
+        if (v > 0) this.audio.setVolume(v);
+      },
+      // **★と花を 0 に戻して、最初のステージへ**（Phase 7）。
+      // 入れ替え待ちも解く（花を待っている途中で押されることがある）
+      resetProgress: () => {
+        this.score.reset();
+        this.changingStage = false;
+        void this.loadStage(STAGES[0].id);
+      },
     });
     this.gate.onUnlock(() => this.parentPanel.open());
 
@@ -308,9 +322,11 @@ export class App {
       if (variant === 'gold') this.score.addFlower();
       else if (variant === 'big') for (let i = 0; i < SPECIAL.bigStars; i++) this.score.add();
       else this.score.add();
-      this.audio.playOneShot('plop');
+      // **その魚の高さで鳴らす**（§6-1 ±5%）
+      const pitch = actor?.pitch ?? 1;
+      this.audio.playOneShot('plop', pitch);
       // **「いてっ」は当たった合図。** `speak()` を通さない（§4-4）
-      this.audio.playVoice('ite');
+      this.audio.playVoice('ite', pitch);
       this.voiceLog.push({ clip: 'ite', at: this.loop.simulatedSeconds });
       this.stageRoot?.spawner.reportHit(true);
     } else {
@@ -480,7 +496,13 @@ export class App {
       if (calling && !this.wasCalling[i]) {
         // すでに待っている声があれば、そのぶん後ろへずらす
         const delay = this.pendingBaa.length * 0.12;
-        this.pendingBaa.push({ actor: i, at: now + delay });
+        // **その魚の高さで鳴らす**（§6-1 ±5%）。1匹ずつ声が違うと、
+        // 同じ音の繰り返しに聞こえない
+        this.pendingBaa.push({
+          actor: i,
+          at: now + delay,
+          pitch: root.fish.actors[i].pitch,
+        });
       }
       this.wasCalling[i] = calling;
     }
@@ -490,13 +512,13 @@ export class App {
     // サプライズも同じ列に並べる（§6-3。声が重ならないように）
     const surpriseCalling = root.surprise.state === 'calling';
     if (surpriseCalling && !this.wasSurpriseCalling) {
-      this.pendingBaa.push({ actor: -2, at: now + this.pendingBaa.length * 0.12 });
+      this.pendingBaa.push({ actor: -2, at: now + this.pendingBaa.length * 0.12, pitch: 1 });
     }
     this.wasSurpriseCalling = surpriseCalling;
 
     const rockCalling = root.rocks.state === 'calling';
     if (rockCalling && !this.wasRockCalling) {
-      this.pendingBaa.push({ actor: -1, at: now + this.pendingBaa.length * 0.12 });
+      this.pendingBaa.push({ actor: -1, at: now + this.pendingBaa.length * 0.12, pitch: 1 });
     }
     this.wasRockCalling = rockCalling;
 
@@ -511,9 +533,9 @@ export class App {
     // ==================================================================
     while (this.pendingBaa.length > 0 && this.pendingBaa[0].at <= now) {
       if (now - this.lastVoiceAt < 0.12) break;
-      this.pendingBaa.shift();
+      const next = this.pendingBaa.shift();
       this.lastVoiceAt = now;
-      this.audio.playVoice('baa');
+      this.audio.playVoice('baa', next?.pitch ?? 1);
       this.voiceLog.push({ clip: 'baa', at: now });
     }
   }
@@ -572,6 +594,8 @@ export class App {
       forceSurprise: () => this.stageRoot?.surprise.forceNow(),
       /** 得点（§4-6）。**数字は画面に出さない**ので、確認はここから */
       getScore: () => this.score.describe(),
+      /** 音の設定（Phase 7。おとなの画面から変える） */
+      getAudio: () => ({ muted: this.audio.isMuted(), volume: this.audio.getVolume() }),
       /** 保護者用パネルが開いているか（E2E 用） */
       isParentPanelOpen: () => this.parentPanel.isOpen(),
       openParentPanel: () => this.parentPanel.open(),

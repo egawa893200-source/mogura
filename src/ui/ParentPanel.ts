@@ -31,7 +31,25 @@ export interface ParentPanelActions {
   currentStage(): string;
   /** 選べるステージ（id と ひらがなの名前） */
   stages(): readonly { id: string; label: string }[];
+  /** 音の大きさ 0..1（0 は消音） */
+  volume(): number;
+  setVolume(v: number): void;
+  /** ★と花を 0 に戻して、最初のステージへ（Phase 7） */
+  resetProgress(): void;
 }
+
+/**
+ * 音の大きさの選択肢（Phase 7）。
+ *
+ * **細かいつまみにしない。** 遊んでいる最中に片手で押すので、3択で足りる。
+ * 既定は 0.13 で、これは `AudioBus.DEFAULT_VOLUME` と同じ値
+ * （**素材側で大きさを作ってある**ので、ここを上げると割れる）
+ */
+const VOLUMES: readonly { label: string; value: number }[] = [
+  { label: 'なし', value: 0 },
+  { label: 'ちいさめ', value: 0.07 },
+  { label: 'ふつう', value: 0.13 },
+];
 
 export class ParentPanel {
   private root: HTMLDivElement | null = null;
@@ -80,6 +98,31 @@ export class ParentPanel {
           }, s.id === this.actions.currentStage())
         )
       )
+    );
+
+    const current = this.actions.volume();
+    root.append(
+      this.section(
+        'おと',
+        VOLUMES.map((v) =>
+          this.button(
+            v.label,
+            () => {
+              this.actions.setVolume(v.value);
+              this.close();
+            },
+            Math.abs(current - v.value) < 0.005
+          )
+        )
+      ),
+      // **「さいしょから」は押し間違えても取り返しがつく。**
+      // 減るのは★と花だけで、遊びかたは何も変わらない（不変条件11 の例外）
+      this.section('とくてん', [
+        this.button('さいしょから', () => {
+          this.actions.resetProgress();
+          this.close();
+        }),
+      ])
     );
 
     const close = this.button('とじる', () => this.close());

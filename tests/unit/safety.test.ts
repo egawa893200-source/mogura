@@ -30,7 +30,9 @@ import {
   HIDE_LIFT as ROCK_HIDE_LIFT,
   RockSystem,
 } from '../../src/poko/RockSystem';
+import { HitEffect } from '../../src/poko/HitEffect';
 import { Spawner, seededRandom } from '../../src/poko/Spawner';
+import { prefersReducedMotion } from '../../src/core/Motion';
 import { SurpriseFish } from '../../src/poko/SurpriseFish';
 import { STARS_PER_FLOWER } from '../../src/ui/Score';
 import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
@@ -1608,5 +1610,205 @@ describe('おとなの画面で選んだ魚（§6-2 の決め打ち）', () => {
     const before = fish.actors.filter((a) => a.state === 'up').length;
     for (let i = 0; i < 60; i++) spawner.update(1 / 60, fish);
     expect(fish.actors.filter((a) => a.state === 'up').length).toBe(before);
+  });
+});
+
+
+describe('§6-1 毎回変わる小さなばらつき', () => {
+  const stageFish = () => STAGES[0].fish.map((id) => findFish(id)!);
+
+  it('大きさ ±10% / 声の高さ ±5% / 角度 ±8° の範囲に収まる', () => {
+    // **実測して確かめる**（「ばあ！」で、書いてある値と出る値が
+    // 違っていたことが何度もある）。`Spawner` が引いた値をそのまま見る
+    const fish = new FishSystem(stageFish());
+    const spawner = new Spawner(6, 0x1234abcd);
+    const seen = { size: [Infinity, -Infinity], pitch: [Infinity, -Infinity], tilt: [Infinity, -Infinity] };
+    let count = 0;
+    for (let i = 0; i < 60 * 60 * 20; i++) {
+      const before = fish.actors.map((a) => a.state);
+      spawner.update(1 / 60, fish);
+      fish.update(1 / 60);
+      fish.actors.forEach((a, k) => {
+        if (before[k] !== 'hidden' || a.state === 'hidden') return;
+        count++;
+        seen.size[0] = Math.min(seen.size[0], a.sizeJitter);
+        seen.size[1] = Math.max(seen.size[1], a.sizeJitter);
+        seen.pitch[0] = Math.min(seen.pitch[0], a.pitch);
+        seen.pitch[1] = Math.max(seen.pitch[1], a.pitch);
+        seen.tilt[0] = Math.min(seen.tilt[0], a.tilt);
+        seen.tilt[1] = Math.max(seen.tilt[1], a.tilt);
+      });
+    }
+    expect(count, `${count}匹ぶん数えた`).toBeGreaterThan(100);
+    expect(seen.size[0]).toBeGreaterThanOrEqual(0.9);
+    expect(seen.size[1]).toBeLessThanOrEqual(1.1);
+    expect(seen.pitch[0]).toBeGreaterThanOrEqual(0.95);
+    expect(seen.pitch[1]).toBeLessThanOrEqual(1.05);
+    const deg = (r: number) => (r * 180) / Math.PI;
+    expect(deg(seen.tilt[0])).toBeGreaterThanOrEqual(-8);
+    expect(deg(seen.tilt[1])).toBeLessThanOrEqual(8);
+    // **同じ値ばかり出ていないこと**（振っているつもりで振れていない事故）
+    expect(seen.size[1] - seen.size[0], 'ばらついていない').toBeGreaterThan(0.1);
+  });
+
+  it('隠れているあいだは、ばらつきが1画素も効かない', () => {
+    // ==================================================================
+    // **ここが §6-1 でいちばん危ないところ。**
+    // 隠れているとき（`reveal` 0）に大きさや角度を変えると、
+    // 穴や岩の縁からはみ出して「『ばあっ』の時点で見えている」が復活する。
+    // だから `reveal` を掛けて効かせてある
+    // ==================================================================
+    const fish = new FishSystem(stageFish());
+    fish.spawn(0, 0, 1, 'normal', { size: 1.1, pitch: 1.05, tilt: (8 * Math.PI) / 180 });
+    const actor = fish.actors[0];
+    fish.update(1 / 60);
+    expect(actor.reveal).toBe(0);
+    expect(actor.group.scale.x, '隠れているのに大きさが違う').toBeCloseTo(1, 6);
+    expect(actor.group.scale.y).toBeCloseTo(1, 6);
+    expect(actor.group.rotation.z, '隠れているのに傾いている').toBeCloseTo(0, 6);
+
+    // 出きったら、指定どおりに効く
+    for (let i = 0; i < 60 * 5; i++) {
+      fish.update(1 / 60);
+      if (actor.state === 'up') break;
+    }
+    expect(actor.state).toBe('up');
+    expect(actor.group.scale.x).toBeCloseTo(1.1, 3);
+    expect(((actor.group.rotation.z * 180) / Math.PI)).toBeCloseTo(8, 3);
+  });
+
+  it('ばらつきは、状態の切り替わる時刻を変えない（§4-3 の表を動かさない）', () => {
+    // **「ばあ！」で速さを振ったら §4-3 の表とずれて安全テストが5件落ちた。**
+    // 大きさ・高さ・角度は見た目と音だけで、時間には触っていないこと
+    const plain = new FishSystem(stageFish());
+    const wild = new FishSystem(stageFish());
+    plain.spawn(0, 0, 1, 'normal');
+    wild.spawn(0, 0, 1, 'normal', { size: 1.1, pitch: 1.05, tilt: 0.14 });
+    for (let i = 0; i < 60 * 20; i++) {
+      plain.update(1 / 60);
+      wild.update(1 / 60);
+      expect(wild.actors[0].state, `${i}フレーム目でずれた`).toBe(plain.actors[0].state);
+    }
+  });
+
+  it('潰れかたが3種類とも読まれている（`squashStyle`）', () => {
+    // ==================================================================
+    // **データに書いてあるのに誰も読んでいなかった**（2026-09-17 に足した）。
+    // 「ばあ！」で `AnimalConfig.style` を25体ぶん書いて誰も読んでおらず、
+    // どの動物も同じ出かたをしていたのと**まったく同じ形の抜け**。
+    // ここは「3種類が別の形になる」ことを数値で押さえる
+    // ==================================================================
+    const styles = new Map<string, { sx: number; sy: number; rot: number }>();
+    for (const style of ['flat', 'wide', 'spin'] as const) {
+      const config = { ...findFish('kingyo')!, squashStyle: style };
+      const fish = new FishSystem([config]);
+      fish.spawn(0, 0, 1, 'normal');
+      for (let i = 0; i < 60 * 5; i++) {
+        fish.update(1 / 60);
+        if (fish.actors[0].state === 'up') break;
+      }
+      expect(fish.hit(0)).toBe(true);
+      for (let i = 0; i < 12; i++) fish.update(1 / 60);
+      const g = fish.actors[0].group;
+      styles.set(style, { sx: g.scale.x, sy: g.scale.y, rot: g.rotation.z });
+    }
+    const flat = styles.get('flat')!;
+    const wide = styles.get('wide')!;
+    const spin = styles.get('spin')!;
+    // wide は横に伸びるほうが強い
+    expect(wide.sx, '`wide` が `flat` より横に伸びていない').toBeGreaterThan(flat.sx);
+    expect(wide.sy, '`wide` が `flat` より潰れている').toBeGreaterThan(flat.sy);
+    // spin は回る
+    expect(Math.abs(spin.rot), '`spin` が回っていない').toBeGreaterThan(0.2);
+    expect(Math.abs(flat.rot), '`flat` が回っている').toBeLessThan(1e-6);
+  });
+
+  it('`spin` は叩かれたときだけ回り、0.45秒で1回転する', () => {
+    const config = { ...findFish('kingyo')!, squashStyle: 'spin' as const };
+    const fish = new FishSystem([config]);
+    fish.spawn(0, 0, 1, 'normal');
+    for (let i = 0; i < 60 * 5; i++) {
+      fish.update(1 / 60);
+      if (fish.actors[0].state === 'up') break;
+    }
+    // 出ているあいだは回らない（回ると「叩いた」が伝わらなくなる）
+    expect(fish.actors[0].group.rotation.z).toBeCloseTo(0, 6);
+    fish.hit(0);
+    let maxRot = 0;
+    for (let i = 0; i < 60 * 2; i++) {
+      fish.update(1 / 60);
+      maxRot = Math.max(maxRot, Math.abs(fish.actors[0].group.rotation.z));
+      if (fish.actors[0].state === 'hidden') break;
+    }
+    // 1回転（2π）まで回る。**それ以上回さない**（目が追えない）
+    expect(maxRot).toBeGreaterThan(Math.PI * 1.8);
+    expect(maxRot).toBeLessThanOrEqual(Math.PI * 2 + 1e-6);
+    // 引っ込んだら向きも戻る
+    expect(fish.actors[0].group.rotation.z).toBeCloseTo(0, 6);
+  });
+
+  it('引っ込んだら、ばらつきも元に戻る', () => {
+    // 魚は1種につき1匹しか持っていない。戻し忘れると次の登場に持ち越す
+    const fish = new FishSystem(stageFish());
+    fish.spawn(0, 0, 1, 'normal', { size: 1.1, pitch: 1.05, tilt: 0.14 });
+    for (let i = 0; i < 60 * 30; i++) {
+      fish.update(1 / 60);
+      if (fish.actors[0].state === 'hidden') break;
+    }
+    expect(fish.actors[0].state).toBe('hidden');
+    expect(fish.actors[0].sizeJitter).toBe(1);
+    expect(fish.actors[0].pitch).toBe(1);
+    expect(fish.actors[0].tilt).toBe(0);
+  });
+});
+
+
+describe('Phase 7 の仕上げ（動きを弱める / 得点のリセット）', () => {
+  it('「動きを減らして」の指定で、しぶきの数と揺れの角度が小さくなる', () => {
+    // ==================================================================
+    // **弱めるのであって、消すのではない**（不変条件1・6）。
+    // 粒が 0 になると「押したのに何も起きない」と同じになる。
+    // **`Ripple` と同じ指定を見ていること**が要点 —— 自前で `matchMedia` を
+    // 読んでいた箇所があり、あとから足した効果が同じ指定を見ていなかった
+    // ==================================================================
+    const rng = seededRandom(7);
+    const count = (reduced: boolean, strong: boolean): number => {
+      const effect = new HitEffect('#3fd0d8', reduced);
+      effect.splash(new THREE.Vector3(0, 0, 0), strong, rng);
+      return effect.group.children.filter((c) => c.visible && c.name !== 'hammer').length;
+    };
+    const plainHit = count(false, true);
+    const reducedHit = count(true, true);
+    expect(plainHit, 'しぶきが出ていない').toBeGreaterThan(0);
+    expect(reducedHit, '弱めたら消えてしまった').toBeGreaterThan(0);
+    expect(reducedHit, '弱まっていない').toBeLessThan(plainHit);
+    // 外したときも同じ（こちらはもともと控えめ）
+    expect(count(true, false)).toBeGreaterThan(0);
+    expect(count(true, false)).toBeLessThanOrEqual(count(false, false));
+  });
+
+  it('揺れは、弱めても 0 にはならない', () => {
+    // **叩いた水たまりが揺れるのは「当たった」の合図**（§4-3）。
+    // 角度を落とすだけで、揺れ自体は残す
+    const angle = (reduced: boolean): number => {
+      const effect = new HitEffect('#3fd0d8', reduced);
+      const hole = new THREE.Group();
+      effect.shake(0);
+      let max = 0;
+      for (let i = 0; i < 20; i++) {
+        effect.update(1 / 60, [hole]);
+        max = Math.max(max, Math.abs(hole.rotation.z));
+      }
+      return max;
+    };
+    const plain = angle(false);
+    const reduced = angle(true);
+    expect(reduced).toBeGreaterThan(0);
+    expect(reduced).toBeLessThan(plain);
+  });
+
+  it('DOM が無い環境でも、指定の読み取りが例外を投げない', () => {
+    // 例外を投げてユーザーに見せない（§2）。読めなければ「弱めない」
+    expect(prefersReducedMotion()).toBe(false);
   });
 });

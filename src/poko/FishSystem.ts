@@ -76,6 +76,17 @@ export interface FishActor {
   /** この登場だけの速さの倍率（§6-1。1 より大きいと遅い） */
   speed: number;
   /**
+   * この登場だけのばらつき（§6-1）。**どれも `reveal` を掛けて効かせる** ——
+   * 隠れているとき（`reveal` 0）に効かせると、穴や岩からはみ出して
+   * 「ばあっ の時点で見えている」が復活する（実機で一度言われている）
+   */
+  /** 大きさ 0.9〜1.1 */
+  sizeJitter: number;
+  /** 声と音の高さ 0.95〜1.05 */
+  pitch: number;
+  /** 出てくる角度［ラジアン］±8° */
+  tilt: number;
+  /**
    * この登場だけの種類（§6-2）。**大きい と きんいろ は同時に起きない。**
    *
    * `Spawner` が出すときに決める。**引っ込んだら必ず `normal` に戻す**
@@ -84,6 +95,23 @@ export interface FishActor {
    */
   variant: FishVariant;
 }
+
+/**
+ * 1回の登場だけのばらつき（§6-1）。**`Spawner` が引いて渡す。**
+ * `FishSystem` の中で乱数を引かないのは、抽選の乱数列を1本にまとめて
+ * 「オブジェクトを1つ足すと測定値が動く」を避けるため（§4-2）
+ */
+export interface FishJitter {
+  /** 大きさ 0.9〜1.1 */
+  size: number;
+  /** 声と音の高さ 0.95〜1.05 */
+  pitch: number;
+  /** 出てくる角度［ラジアン］ */
+  tilt: number;
+}
+
+/** ばらつき無し。**既定はこれ**（テストや呼び分けで指定しないとき） */
+export const NO_JITTER: FishJitter = { size: 1, pitch: 1, tilt: 0 };
 
 export class FishSystem {
   readonly group = new THREE.Group();
@@ -121,6 +149,9 @@ export class FishSystem {
         holeIndex: -1,
         elapsed: 0,
         speed: 1,
+        sizeJitter: 1,
+        pitch: 1,
+        tilt: 0,
         variant: 'normal',
       });
     }
@@ -230,7 +261,8 @@ export class FishSystem {
     actorIndex: number,
     holeIndex: number,
     speed = 1,
-    variant: FishVariant = 'normal'
+    variant: FishVariant = 'normal',
+    jitter: FishJitter = NO_JITTER
   ): boolean {
     const actor = this.actors[actorIndex];
     if (!actor || actor.state !== 'hidden') return false;
@@ -242,6 +274,10 @@ export class FishSystem {
     actor.holeIndex = holeIndex;
     actor.elapsed = 0;
     actor.speed = speed;
+    // §6-1 のばらつき。**出すときに1回だけ決める**（毎フレーム引かない）
+    actor.sizeJitter = jitter.size;
+    actor.pitch = jitter.pitch;
+    actor.tilt = jitter.tilt;
     // **色は出す前に決める**（§6-2）。`calling` のあいだは見えていないので、
     // 姿が出た最初の1フレームからきんいろで見える
     actor.variant = variant;
@@ -399,12 +435,21 @@ export class FishSystem {
     // 戻し忘れると次に出たときも金のまま・大きいままになる
     this.shapes[this.actors.indexOf(actor)]?.setGold(false);
     actor.variant = 'normal';
+    // **ばらつきも戻す**（§6-2 の色と同じ理由。魚は1種につき1匹しか無い）
+    actor.sizeJitter = 1;
+    actor.pitch = 1;
+    actor.tilt = 0;
     actor.state = 'hidden';
     actor.reveal = 0;
     actor.squash = 0;
     actor.bump = 0;
     actor.holeIndex = -1;
     actor.elapsed = 0;
+    // **見た目も戻す。** `place()` は `hidden` では何もしないので、
+    // ここで戻さないと `spin` の回転（2π）や潰れた形が次の登場に持ち越す
+    // （単体テストが捕まえた。2π は見た目が同じなので目では気づけない）
+    actor.group.rotation.z = 0;
+    actor.group.scale.set(1, 1, 1);
     actor.group.visible = false;
   }
 
@@ -431,8 +476,40 @@ export class FishSystem {
       actor.variant === 'big'
         ? Math.min(SPECIAL.bigScale, baseHeight > 0 ? SPECIAL.bigMaxHeight / baseHeight : SPECIAL.bigScale)
         : 1;
-    const s = 1 - actor.squash * 0.55;
-    actor.group.scale.set(big * (1 + actor.squash * 0.3), big * s, big);
+    // ==================================================================
+    // §6-1 のばらつき。**`reveal` を掛けて効かせる。**
+    //
+    // 隠れているとき（`reveal` 0）に大きさや角度を変えると、穴や岩の縁から
+    // はみ出して「『ばあっ』の時点で見えている」が復活する
+    // （実機で一度言われている。テストもそこを見張っている）。
+    // 出るにつれて効くので、**出きったときは指定どおりの ±10%**になる
+    // ==================================================================
+    const jitter = 1 + (actor.sizeJitter - 1) * actor.reveal;
+    // ==================================================================
+    // 潰れかたは魚ごとに3種類（§6-1 の `squashStyle`）。
+    //
+    // **データに書いてあるのに誰も読んでいなかった**（2026-09-17）。
+    // 「ばあ！」で `AnimalConfig.style` を25体ぶん書いて誰も読んでおらず、
+    // どの動物も同じ出かたをしていたのと**まったく同じ形の抜け**。
+    //   flat … 縦に潰れて横に広がる（既定）
+    //   wide … 横に伸びるほうが強い（平たい魚）
+    //   spin … くるっと回って沈む
+    // **合計時間は変えない**（§4-3 の 0.45秒は3種類とも同じ）
+    // ==================================================================
+    const q = actor.squash;
+    const style = actor.config.squashStyle;
+    const stretch = style === 'wide' ? 0.55 : style === 'spin' ? 0.2 : 0.3;
+    const flatten = style === 'wide' ? 0.25 : style === 'spin' ? 0.35 : 0.55;
+    const s = 1 - q * flatten;
+    actor.group.scale.set(big * jitter * (1 + q * stretch), big * jitter * s, big * jitter);
+    // 出てくる角度（§6-1 ±8°）と、`spin` の回転。
+    // **回すのは叩かれてからの進みで測る** —— `squash` は 0.12秒で 1 に
+    // 張り付くので、そこで回すと途中で止まって見える
+    const spin =
+      style === 'spin' && actor.state === 'hit'
+        ? Math.min(1, actor.elapsed / TIMING.hitSec) * Math.PI * 2
+        : 0;
+    actor.group.rotation.z = actor.tilt * actor.reveal + spin;
     shape?.setBump(actor.bump);
   }
 

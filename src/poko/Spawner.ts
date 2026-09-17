@@ -217,7 +217,18 @@ export class Spawner {
     const rolled = pickVariant(this.rng());
     const variant = this.forced ?? rolled;
     this.forced = null;
-    if (!fish.spawn(actorIndex, holeIndex, speed, variant)) return false;
+    // ==================================================================
+    // §6-1 の小さなばらつき。**ここで1回だけ引く**（毎フレーム引かない）。
+    //   大きさ ±10% / 声と音の高さ ±5% / 出てくる角度 ±8°
+    // **速さ（上の `speed`）だけは合計時間に影響する**ので、
+    // 速くなったぶんは待ちで吸収してある。ここの3つは見た目と音だけ
+    // ==================================================================
+    const jitter = {
+      size: 0.9 + this.rng() * 0.2,
+      pitch: 0.95 + this.rng() * 0.1,
+      tilt: ((this.rng() * 2 - 1) * 8 * Math.PI) / 180,
+    };
+    if (!fish.spawn(actorIndex, holeIndex, speed, variant, jitter)) return false;
     this.lastHole = holeIndex;
     return true;
   }
