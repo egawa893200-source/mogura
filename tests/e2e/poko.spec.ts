@@ -807,6 +807,37 @@ test.describe('サプライズ（§6-3）— 画面の下から大きく1匹', (
     expect(after, '覆われた下の段に魚が出た').toBeLessThanOrEqual(before);
   });
 
+  test('どちらのステージでも、体が画面の中に収まる', async ({ page }) => {
+    // ==================================================================
+    // **実機で「うまく表示されていない」と言われた**（2026-09-17）。
+    // えい は翼が縦を向いたまま引き伸ばされて**平たい茶色の凧**に見え、
+    // きんぎょ は横長なので**顔が左端で切れて**いた。
+    // 向き（`FishConfig.surprisePose`）と幅の上限（`SURPRISE.maxWidth`）で
+    // 直したので、**体の見かけの矩形が画面から出ていないこと**を数値で見る
+    // ==================================================================
+    await boot(page);
+    const size = page.viewportSize()!;
+    for (const stage of ['ike', 'umi']) {
+      await page.evaluate((id) => window.__poko.setStage(id), stage);
+      await page.waitForFunction(
+        (id) => window.__poko.getStageId() === id && window.__poko.getHoles().length === 6,
+        stage
+      );
+      const s = await popSurprise(page);
+      expect(s.y - s.ry, `${stage} 上が切れている`).toBeGreaterThanOrEqual(0);
+      expect(s.y + s.ry, `${stage} 下が切れている`).toBeLessThanOrEqual(size.height);
+      expect(s.x - s.rx, `${stage} 左が切れている`).toBeGreaterThanOrEqual(0);
+      expect(s.x + s.rx, `${stage} 右が切れている`).toBeLessThanOrEqual(size.width);
+      // **水たまりの魚よりはっきり大きい**（§6-3 の「大きく1匹」）
+      const holes = await page.evaluate(() => window.__poko.getHoles());
+      expect(s.ry * 2, `${stage} 大きく見えない`).toBeGreaterThan(holes[0].radiusPx);
+      // 次のステージへ行く前に、引っ込みきるまで待つ
+      await page.waitForFunction(() => window.__poko.getSurprise()?.state === 'hidden', null, {
+        timeout: 60_000,
+      });
+    }
+  });
+
   test('出ている途中に連打しても、必ず反応が返る（不変条件1・2）', async ({ page }) => {
     // **「アニメーション中だから無視」は禁止**（不変条件2）
     await boot(page);
@@ -832,9 +863,13 @@ test.describe('サプライズ（§6-3）— 画面の下から大きく1匹', (
       { timeout: 60_000 }
     );
     const before = await page.evaluate(() => window.__poko.getTapCount());
-    const s = (await page.evaluate(() => window.__poko.getSurprise()))!;
-    const y = Math.min(s.y, size.height - 10);
-    for (let i = 0; i < 6; i++) await page.mouse.click(s.x, y);
+    // **押す直前に測り直す。** 出てくる速さは 560px/秒 あるので、
+    // 1回目の座標で6回押すと、2回目以降は体がもう上へ抜けている
+    // （実際にそう書いて、6回とも楕円の外だった）
+    for (let i = 0; i < 6; i++) {
+      const s = (await page.evaluate(() => window.__poko.getSurprise()))!;
+      await page.mouse.click(s.x, Math.min(s.y, size.height - 10));
+    }
     const after = await page.evaluate(() => window.__poko.getTapCount());
     expect(after - before, '連打が落ちている').toBe(6);
     // **1回目で受けている**（出ている途中でも叩ける）
@@ -880,6 +915,40 @@ test.describe('おとなの画面（ペアレンタルゲートの奥）', () =>
       timeout: 60_000,
     });
     expect(await page.evaluate(() => window.__poko.isParentPanelOpen())).toBe(false);
+  });
+
+  test('きんいろを選ぶと、3秒以内に出てくる（§6-2）', async ({ page }) => {
+    // ==================================================================
+    // **実機で「きんいろが出現しない」と言われた**（2026-09-17）。
+    // 同時に出せるのは2匹まで（§4-2）なので、上限に達しているあいだは
+    // 抽選が動かず、**押してから 6.0〜8.2秒**待たされていた。
+    // 大人には出ていないのと同じに見える。**待つのは更新時計**（§11-4）
+    // ==================================================================
+    await boot(page);
+    // 2匹出きるまで待つ（上限に達した状態から押す）
+    await page.waitForFunction(
+      () => window.__poko.getFish().filter((f) => f.state === 'up').length >= 2,
+      null,
+      { timeout: 60_000 }
+    );
+    await page.evaluate(() => window.__poko.openParentPanel());
+    const sec = await page.evaluate(async () => {
+      const btn = [...document.querySelectorAll('.parent-panel__button')].find(
+        (b) => b.textContent === 'きんいろ'
+      );
+      (btn as HTMLButtonElement).click();
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 20) {
+        const g = window.__poko
+          .getFish()
+          .find((f) => f.variant === 'gold' && (f.state === 'rising' || f.state === 'up'));
+        if (g) return window.__poko.getSimulatedSeconds() - start;
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return -1;
+    });
+    expect(sec, 'きんいろが出てこない').toBeGreaterThan(0);
+    expect(sec, `実測 ${sec.toFixed(2)}秒`).toBeLessThanOrEqual(3);
   });
 
   test('おとなの画面のボタンは、下の遊びにタップを通さない', async ({ page }) => {

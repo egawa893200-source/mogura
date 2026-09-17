@@ -1505,3 +1505,108 @@ describe('サプライズ（§6-3）', () => {
     expect(fish.countActive(), '入れ替え待ちの停止が解けている').toBe(0);
   });
 });
+
+
+describe('おとなの画面で選んだ魚（§6-2 の決め打ち）', () => {
+  const stageFish = () => STAGES[0].fish.map((id) => findFish(id)!);
+
+  /**
+   * 上限（2匹）まで**出きった**状態を作る。
+   *
+   * **`countActive()` で待たないこと。** 出はじめ（`calling`）も数えるので、
+   * 2匹とも声だけの状態で抜けてしまい、そのあとの「叩ける相手が居るか」の
+   * 測定が、出はじめの 0.38秒を空白として数える（実際にそう書いて外した）
+   */
+  function fillUp(fish: FishSystem, spawner: Spawner): void {
+    for (let i = 0; i < 60 * 20; i++) {
+      spawner.update(1 / 60, fish);
+      fish.update(1 / 60);
+      if (fish.actors.filter((a) => a.state === 'up').length >= MAX_UP_FISH) break;
+    }
+  }
+
+  it('上限に達していても、2.5秒以内に出はじめる', () => {
+    // ==================================================================
+    // **実機で「きんいろが出現しない」と言われた**（2026-09-17）。
+    // 同時に出せるのは2匹まで（§4-2）なので、上限に達しているあいだは
+    // 抽選が動かず、**実測 6.0〜8.2秒**待たされていた。
+    // 押した大人には出ていないのと同じに見える。
+    // 席を1つ空ける（`FishSystem.retreatOldest()`）ようにして 1.3〜1.5秒。
+    // **上限そのものは破っていない**（下のテストが見張る）
+    // ==================================================================
+    const fish = new FishSystem(stageFish());
+    const spawner = new Spawner(6);
+    fillUp(fish, spawner);
+    expect(fish.countActive()).toBe(MAX_UP_FISH);
+
+    spawner.forceNext('gold');
+    let sec = -1;
+    let maxActive = 0;
+    let starved = 0;
+    for (let i = 0; i < 60 * 20; i++) {
+      spawner.update(1 / 60, fish);
+      fish.update(1 / 60);
+      maxActive = Math.max(maxActive, fish.countActive());
+      if (fish.countRisingOrUp() === 0) starved++;
+      const gold = fish.actors.find((a) => a.variant === 'gold');
+      if (gold && (gold.state === 'rising' || gold.state === 'up')) {
+        sec = i / 60;
+        break;
+      }
+    }
+    expect(sec, 'きんいろが出てこない').toBeGreaterThan(0);
+    expect(sec, `実測 ${sec.toFixed(2)}秒`).toBeLessThanOrEqual(2.5);
+    // **上限は破らない**（§4-2）
+    expect(maxActive, '3匹目が出た').toBeLessThanOrEqual(MAX_UP_FISH);
+    // **叩ける相手は途切れない**（不変条件4c）
+    expect(starved, '席を空けたせいで画面が空になった').toBe(0);
+  });
+
+  it('席を空けるのは、2匹出ているときだけ', () => {
+    // 1匹しか出ていないときに沈めると、叩ける相手が 0 になる（不変条件4c）
+    const fish = new FishSystem(stageFish());
+    fish.spawn(0, 0, 1, 'normal');
+    for (let i = 0; i < 60 * 3; i++) fish.update(1 / 60);
+    expect(fish.actors[0].state).toBe('up');
+    const spawner = new Spawner(6);
+    spawner.forceNext('gold');
+    // 上限に達していないので、そのまま出せる（沈ませる必要が無い）
+    for (let i = 0; i < 60 * 5; i++) {
+      spawner.update(1 / 60, fish);
+      fish.update(1 / 60);
+      expect(fish.countRisingOrUp(), '画面が空になった').toBeGreaterThan(0);
+    }
+    expect(fish.actors.some((a) => a.variant === 'gold')).toBe(true);
+  });
+
+  it('決め打ちは、使われるまで残る', () => {
+    // **`App` が入れ替えをまたいで持ち直すための目印**（`hasForced()`）。
+    // ステージが替わると `Spawner` ごと作り直されるので、
+    // これが無いと大人が選んだ直後に花が咲いたときに消える
+    const fish = new FishSystem(stageFish());
+    const spawner = new Spawner(6);
+    expect(spawner.hasForced()).toBe(false);
+    spawner.forceNext('big');
+    expect(spawner.hasForced()).toBe(true);
+    for (let i = 0; i < 60 * 10; i++) {
+      spawner.update(1 / 60, fish);
+      fish.update(1 / 60);
+      if (!spawner.hasForced()) break;
+    }
+    expect(spawner.hasForced(), '使われていない').toBe(false);
+    expect(fish.actors.some((a) => a.variant === 'big')).toBe(true);
+  });
+
+  it('止めているあいだは、決め打ちがあっても席を空けない', () => {
+    // 入れ替え待ち（§5-3）とサプライズ（§6-3）のあいだは抽選ごと止まる。
+    // ここで沈ませると、止めている理由（画面をいじらない）が崩れる
+    const fish = new FishSystem(stageFish());
+    const spawner = new Spawner(6);
+    fillUp(fish, spawner);
+    spawner.setPaused(true);
+    spawner.forceNext('gold');
+    const before = fish.actors.filter((a) => a.state === 'up').length;
+    for (let i = 0; i < 60; i++) spawner.update(1 / 60, fish);
+    expect(fish.actors.filter((a) => a.state === 'up').length).toBe(before);
+  });
+});

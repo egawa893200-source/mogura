@@ -84,6 +84,9 @@ export const FISH: readonly FishConfig[] = [
     modelUrl: '/models/ray.glb',
     modelFlip: true,
     modelRollDeg: 90,
+    // **大きく見せるときだけ、体軸を上に向ける**（§6-3）。
+    // 横向きのままだと平たい茶色の凧に見えた（実機の指摘）
+    surprisePose: [0, 0, 90],
     modelScale: 1.15,
   },
   {

@@ -23,7 +23,7 @@
 import * as THREE from 'three';
 
 import { SPECIAL, type FishVariant } from '../data/special';
-import { TIMING } from '../data/timing';
+import { MAX_UP_FISH, TIMING } from '../data/timing';
 import type { FishConfig } from '../types';
 import { createProceduralFish, type ProceduralFish } from './ProceduralFish';
 import { FISH_Z, MOUTH_X, OUT_X } from './WaterShape';
@@ -329,7 +329,15 @@ export class FishSystem {
             // 待たされるのは最大でも次の抽選まで（0.8〜2.0秒）。
             // ==========================================================
             const alone = this.countRisingOrUp() === 1;
-            if (alone && !this.hasFree()) break;
+            // **代わりを出せないなら沈まない**（不変条件4c）。
+            // 出せない理由は2つある:
+            //  1. 空いている魚が居ない（もともと見ていた条件）
+            //  2. **もう1匹がまだ沈みきっていない** —— 席が埋まっているので
+            //     `Spawner` は上限（§4-2）に阻まれて次を出せない。
+            //     2026-09-17 に実測した: この道を塞がないと、
+            //     2匹が続けて沈みはじめたときに**最大 0.9秒、画面から
+            //     叩ける相手が消える**（単体テストで 93フレーム見えた）
+            if (alone && (!this.hasFree() || this.countActive() >= MAX_UP_FISH)) break;
             actor.state = 'retreating';
             actor.elapsed = 0;
           }
@@ -353,6 +361,37 @@ export class FishSystem {
       }
       this.place(actor);
     }
+  }
+
+  /**
+   * いちばん長く出ている1匹を、先に沈ませる（§6-2 の決め打ち用）。
+   *
+   * ==========================================================================
+   * **おとなの画面で選んだ魚が、6〜8秒 出てこなかった**（2026-09-17、実測）。
+   * 同時に出せるのは2匹まで（§4-2）なので、上限に達しているあいだは
+   * 抽選そのものが動かない。**空くのを待つと `up`（6秒）＋沈み（0.9秒）**
+   * ぶん待たされる。押した大人には「出現しない」と同じに見える。
+   *
+   * **上限は破らない。** 代わりに1匹ぶん席を空ける。
+   * 沈むのは普段から起きていることなので、見た目には何も変わらない。
+   * **叩ける相手は減らない**（もう1匹が出ているときにしか呼ばれない）。
+   * ==========================================================================
+   */
+  retreatOldest(): boolean {
+    let target: FishActor | null = null;
+    for (const actor of this.actors) {
+      if (actor.state !== 'up') continue;
+      if (!target || actor.elapsed > target.elapsed) target = actor;
+    }
+    if (!target) return false;
+    target.state = 'retreating';
+    target.elapsed = 0;
+    // **残るほうの持ち時間を戻す。** 戻さないと、席が空くのを待つ 0.9秒の
+    // あいだにこちらも寿命が来て、叩ける相手が居ない時間ができる
+    for (const actor of this.actors) {
+      if (actor !== target && actor.state === 'up') actor.elapsed = 0;
+    }
+    return true;
   }
 
   private retire(actor: FishActor): void {

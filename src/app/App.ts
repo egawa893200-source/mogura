@@ -19,7 +19,7 @@ import { Renderer } from '../core/Renderer';
 import { ScreenProjector } from '../core/ScreenProjector';
 import { WakeLock } from '../core/WakeLock';
 import { LIGHTS } from '../data/look';
-import { SPECIAL, SURPRISE } from '../data/special';
+import { SPECIAL, SURPRISE, type FishVariant } from '../data/special';
 import { STAGES, findStage } from '../data/stages';
 import { StageRoot } from '../scene/StageRoot';
 import { VideoLayer } from '../scene/VideoLayer';
@@ -88,6 +88,11 @@ export class App {
   private wasSurpriseCalling = false;
   /** サプライズを押した回数 */
   private surpriseTapCount = 0;
+  /**
+   * おとなの画面で選んだ「次の1匹」（§6-2）。**入れ替えをまたいで持つ**。
+   * 出た（`Spawner` が使いきった）時点で null に戻す
+   */
+  private pendingVariant: FishVariant | null = null;
 
   constructor(elements: AppElements) {
     this.renderer = new Renderer(elements.webglLayer);
@@ -120,7 +125,7 @@ export class App {
     // 打てなかった。子どもには届かない（2秒長押し＋3択）
     // ==================================================================
     this.parentPanel = new ParentPanel(elements.uiRoot, {
-      forceVariant: (v) => this.stageRoot?.spawner.forceNext(v),
+      forceVariant: (v) => this.forceVariant(v),
       forceSurprise: () => this.stageRoot?.surprise.forceNow(),
       setStage: (id) => void this.loadStage(id),
       currentStage: () => this.stageId,
@@ -157,6 +162,11 @@ export class App {
       // **更新時計を渡す。壁時計を読まない**（§11-4）
       this.stageRoot?.update(ctx.dt, this.loop.simulatedSeconds);
       this.speakOnRise();
+      // **決め打ちが使われたら覚えているのをやめる**（§6-2）。
+      // 残したままにすると、次のステージでもう1匹きんいろが出る
+      if (this.pendingVariant && this.stageRoot && !this.stageRoot.spawner.hasForced()) {
+        this.pendingVariant = null;
+      }
       // 花が咲いていたら、魚が引っ込みきった時点でステージを入れ替える（§5-3）
       this.pumpStageChange();
     });
@@ -190,6 +200,13 @@ export class App {
       // **入れ替え待ちを必ず解く。** 新しい `StageRoot` は抽選も魚も
       // 作り直されているので、待ちが残っていると次の花で何も起きなくなる
       this.changingStage = false;
+      // ==================================================================
+      // **選んだ種類は入れ替えをまたいで持ち越す**（2026-09-17、実機の指摘）。
+      // `Spawner` はステージごとに作り直されるので、大人が選んだ直後に
+      // 花が咲く（★10 や きんいろ）と、**決め打ちが新しい抽選に伝わらず
+      // 永遠に出てこない**。ここで新しい抽選に渡し直す
+      // ==================================================================
+      if (this.pendingVariant) next.spawner.forceNext(this.pendingVariant);
       // **背景の動画を差し替える**（前のは `setVideo` の中で止めて捨てる）
       this.videoLayer.setVideo(next.video);
       this.scene.add(next.group);
@@ -304,6 +321,18 @@ export class App {
       this.stageRoot?.spawner.reportHit(false);
     }
     this.stageRoot?.spawner.applyAssist(root.fish);
+  }
+
+  /**
+   * 次の1匹の種類を決め打ちする（§6-2）。おとなの画面と `__poko` の両方から来る。
+   *
+   * **`Spawner` に渡すだけにしない。** ステージが入れ替わると抽選ごと
+   * 作り直されるので、渡した値が消える（実機で「きんいろが出現しない」）。
+   * ここで覚えておいて、`loadStage()` が新しい抽選に渡し直す。
+   */
+  private forceVariant(v: FishVariant | null): void {
+    this.pendingVariant = v;
+    this.stageRoot?.spawner.forceNext(v);
   }
 
   /**
@@ -551,8 +580,7 @@ export class App {
        * **16回に1回・20回に1回を待たずに実機で見るための口。**
        * 例: `__poko.forceVariant('gold')`
        */
-      forceVariant: (v: 'normal' | 'big' | 'gold' | null) =>
-        this.stageRoot?.spawner.forceNext(v),
+      forceVariant: (v: 'normal' | 'big' | 'gold' | null) => this.forceVariant(v),
       /** 花が咲いて、ステージの入れ替えを待っているか（§5-3） */
       isChangingStage: () => this.changingStage,
       /** 岩の魚の様子。E2E が「ばあっ の時点で見えていない」を見る */

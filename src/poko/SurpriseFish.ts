@@ -35,6 +35,11 @@ export type SurpriseState = 'hidden' | 'calling' | 'rising' | 'out' | 'hit' | 'r
 /** 当たり判定の半径の下限（px）。出はじめの数フレームを押せるようにするため */
 const MIN_HIT_PX = 40;
 
+/** 度 → ラジアン */
+function rad(deg: number): number {
+  return (deg * Math.PI) / 180;
+}
+
 /** 0..1 をなめらかに。出入りの加速を緩やかにする */
 function smoothstep(t: number): number {
   const x = Math.min(1, Math.max(0, t));
@@ -77,17 +82,42 @@ export class SurpriseFish {
     if (this.fish) {
       // **切り取りを効かせない**（水たまりの口で切るためのもの）
       this.fish.setClipX(-9999);
-      this.fish.group.visible = false;
-      // **大きさは「高さ」で決める。** 種によって元の高さが倍以上違うので、
-      // 倍率で決めるとエイだけ画面を覆う（§6-2 の `bigMaxHeight` と同じ話）
-      const scale = SURPRISE.height / Math.max(0.01, this.fish.height);
-      this.fish.group.scale.setScalar(scale);
-      // **カメラの方を向かせる。** 魚は +x を向いて泳ぐので、
-      // 斜めに構えて輪郭を見せる（岩の魚と同じ理由）
-      this.fish.group.rotation.y = SURPRISE.yaw;
+      // ==================================================================
+      // **向きを先に決めてから、大きさを測る。**
+      // `fish.height` はモデルを組んだときの高さで、**向きを変えると変わる**
+      // （えいは翼が縦なので 1.24 あるが、体軸を上に向けると体長のほうが
+      // 見かけの高さになる）。先に回してから境界箱を測れば、
+      // どの魚でも「画面に出る高さ」がそろう
+      // ==================================================================
+      const pose = config?.surprisePose;
+      if (pose) {
+        this.fish.group.rotation.set(rad(pose[0]), rad(pose[1]), rad(pose[2]));
+      } else {
+        // **カメラの方を向かせる。** 魚は +x を向いて泳ぐので、
+        // 斜めに構えて輪郭を見せる（岩の魚と同じ理由）
+        this.fish.group.rotation.set(0, SURPRISE.yaw, 0);
+      }
       this.group.add(this.fish.group);
+      this.fish.group.updateWorldMatrix(true, true);
+      _box.makeEmpty();
+      expandVisible(_box, this.fish.group);
+      // **隠すのは測ったあと。** `expandVisible()` は見えていないものを数えない
+      // ので、先に隠すと箱が空になり、倍率が 220倍になった（実際にやった）
+      const tall = _box.isEmpty() ? 0 : _box.max.y - _box.min.y;
+      const wide = _box.isEmpty() ? 0 : _box.max.x - _box.min.x;
+      // **高さと幅の両方で頭打ちにする。** 高さだけでそろえると、
+      // 横向きのきんぎょが画面幅を越えて顔が切れる（`SURPRISE.maxWidth`）
+      this.baseScale = Math.min(
+        SURPRISE.height / Math.max(0.01, tall),
+        SURPRISE.maxWidth / Math.max(0.01, wide)
+      );
+      this.fish.group.scale.setScalar(this.baseScale);
+      this.fish.group.visible = false;
     }
   }
+
+  /** 回してから測った倍率。**`fish.height` から出すと向きの変更で狂う** */
+  private baseScale = 1;
 
   /**
    * 画面座標を測り直す。**毎フレーム呼ぶこと**
@@ -272,7 +302,7 @@ export class SurpriseFish {
       SURPRISE.hiddenY + eased * (SURPRISE.outY - SURPRISE.hiddenY),
       SURPRISE.z
     );
-    const scale = SURPRISE.height / Math.max(0.01, fish.height);
+    const scale = this.baseScale;
     // 潰れ。**縦に潰して横に広がる**（§4-4。水たまりの魚と同じ形）
     fish.group.scale.set(
       scale * (1 + this.squash * 0.3),
