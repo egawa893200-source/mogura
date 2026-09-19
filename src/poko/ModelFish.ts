@@ -35,6 +35,14 @@ import { normalizeModelGeometry, tintModelGeometry } from './ModelGeometry';
 /** 体長（ワールド）。**種類によらずそろえる**（当たりやすさを揃えるため） */
 const TARGET_LENGTH = 0.95;
 
+/**
+ * 目の暗さ（展開図を貼るモデル用）。
+ *
+ * **0 にしない。** 真っ黒だと、暗い水の中では穴に見える。
+ * 0.12 は、体表の絵が透けるくらいの黒
+ */
+const EYE_SHADE = 0.12;
+
 export interface ModelFishParts {
   group: THREE.Group;
   width: number;
@@ -72,10 +80,27 @@ export function buildModelFish(
     // 2026-09-14、はぎ（クマノミのモデル＋ナンヨウハギの絵）が
     // **ほぼ黒い茶色**に見えていた直接の原因がこれ
     const count = geometry.getAttribute('position').count;
-    geometry.setAttribute(
-      'color',
-      new THREE.BufferAttribute(new Float32Array(count * 3).fill(1), 3)
-    );
+    const white = new Float32Array(count * 3).fill(1);
+    // ==================================================================
+    // **目だけは白に戻さない**（2026-09-19、ふぐのモデルで絵を見て直した）。
+    //
+    // 全部を白にすると、展開図が**目の上にも貼られて顔が消える**。
+    // 斑点は出たのに目が無く、1歳半には「生き物」に見えない顔になった。
+    // `normalizeModelGeometry` が名前（Eye / Pupil / Iris）で印を付けて
+    // いるので、その頂点だけ暗くする。
+    // **印を持たないモデルは1画素も変わらない**（クマノミとエイは
+    // メッシュが1つで、目の名前を持たない）
+    // ==================================================================
+    const eyeMask = geometry.getAttribute('eyeMask');
+    if (eyeMask) {
+      for (let i = 0; i < count; i++) {
+        if (eyeMask.getX(i) <= 0) continue;
+        white[i * 3] = EYE_SHADE;
+        white[i * 3 + 1] = EYE_SHADE;
+        white[i * 3 + 2] = EYE_SHADE;
+      }
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(white, 3));
   } else {
     // 展開図が無いモデルは、マテリアル色のままだと `color` が効かない。
     // **陰影はモデルから、色は設定から**取って塗り直す

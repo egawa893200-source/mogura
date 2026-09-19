@@ -43,6 +43,8 @@ function mergeGeometries(list: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const position = new Float32Array(vertexCount * 3);
   const uv = new Float32Array(vertexCount * 2);
   const color = new Float32Array(vertexCount * 3);
+  /** 目の頂点の印。**繋ぎ忘れると、マージした瞬間に目が消える** */
+  const eyeMask = new Float32Array(vertexCount);
   const index = new Uint32Array(indexCount);
 
   let vo = 0;
@@ -51,10 +53,12 @@ function mergeGeometries(list: THREE.BufferGeometry[]): THREE.BufferGeometry {
     const p = g.getAttribute('position');
     const u = g.getAttribute('uv');
     const c = g.getAttribute('color');
+    const e = g.getAttribute('eyeMask');
     const idx = g.getIndex()!;
     position.set(p.array as Float32Array, vo * 3);
     if (u) uv.set(u.array as Float32Array, vo * 2);
     if (c) color.set(c.array as Float32Array, vo * 3);
+    if (e) eyeMask.set(e.array as Float32Array, vo);
     for (let i = 0; i < idx.count; i++) index[io + i] = idx.getX(i) + vo;
     vo += p.count;
     io += idx.count;
@@ -64,6 +68,7 @@ function mergeGeometries(list: THREE.BufferGeometry[]): THREE.BufferGeometry {
   out.setAttribute('position', new THREE.BufferAttribute(position, 3));
   out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   out.setAttribute('color', new THREE.BufferAttribute(color, 3));
+  out.setAttribute('eyeMask', new THREE.BufferAttribute(eyeMask, 1));
   out.setIndex(new THREE.BufferAttribute(index, 1));
   return out;
 }
@@ -103,7 +108,8 @@ export function normalizeModelGeometry(
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh || !mesh.geometry) return;
 
-    if (/eye|pupil|iris/i.test(mesh.name)) hasEyeMesh = true;
+    const isEye = /eye|pupil|iris/i.test(mesh.name);
+    if (isEye) hasEyeMesh = true;
 
     const g = mesh.geometry.clone();
     // 親のスケール・回転をジオメトリに焼き込む（ノードの入れ子を潰す）
@@ -128,6 +134,20 @@ export function normalizeModelGeometry(
       colors[i * 3 + 2] = b * (matColor ? matColor.b : 1);
     }
     g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    // ==================================================================
+    // **目の頂点に印を付ける**（2026-09-19）。
+    //
+    // 展開図（`skinUrl`）を貼るモデルは頂点色を白に戻す（下の `ModelFish`）
+    // ので、**目まで体表の絵で塗られて顔が消える**。
+    // ふぐのモデルで実際にそうなった —— 斑点は出たが目が無くなり、
+    // 1歳半には「生き物」に見えない顔になった。
+    //
+    // マージすると頂点の出どころが分からなくなるので、**属性で持ち歩く**。
+    // 印の付いた頂点だけ、貼ったあとに暗くする
+    // ==================================================================
+    const eyeMask = new Float32Array(count).fill(isEye ? 1 : 0);
+    g.setAttribute('eyeMask', new THREE.BufferAttribute(eyeMask, 1));
 
     if (!g.getIndex()) {
       const idx = new Uint32Array(count);

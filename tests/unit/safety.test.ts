@@ -31,6 +31,7 @@ import {
   RockSystem,
 } from '../../src/poko/RockSystem';
 import { HitEffect } from '../../src/poko/HitEffect';
+import { buildModelFish } from '../../src/poko/ModelFish';
 import { Spawner, seededRandom } from '../../src/poko/Spawner';
 import { prefersReducedMotion } from '../../src/core/Motion';
 import { SurpriseFish } from '../../src/poko/SurpriseFish';
@@ -1810,5 +1811,87 @@ describe('Phase 7 の仕上げ（動きを弱める / 得点のリセット）',
   it('DOM が無い環境でも、指定の読み取りが例外を投げない', () => {
     // 例外を投げてユーザーに見せない（§2）。読めなければ「弱めない」
     expect(prefersReducedMotion()).toBe(false);
+  });
+});
+
+
+describe('人間が作ったモデルを入れる（2026-09-19 の ふぐ）', () => {
+  /** 目つきのモデルを組み立てる（`.glb` を読まずに、同じ形の木を作る） */
+  function fakeModel(eyeName: string | null): THREE.Object3D {
+    const root = new THREE.Group();
+    // **体は目より頂点が多いもの**にする（箱どうしだと同数になって、
+    // 「体まで暗くなっていないか」の比較が成り立たない）
+    const body = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 16, 12).scale(1.6, 0.9, 0.9),
+      new THREE.MeshStandardMaterial({ color: 0xffffff })
+    );
+    body.name = 'Body';
+    root.add(body);
+    if (eyeName) {
+      const eye = new THREE.Mesh(
+        new THREE.BoxGeometry(0.2, 0.2, 0.2),
+        new THREE.MeshStandardMaterial({ color: 0x060606 })
+      );
+      eye.name = eyeName;
+      eye.position.set(0.7, 0.2, 0.45);
+      root.add(eye);
+    }
+    root.updateMatrixWorld(true);
+    return root;
+  }
+
+  function colorsOf(root: THREE.Object3D, skin: THREE.Texture | null) {
+    const parts = buildModelFish(root, findFish('fugu')!, skin);
+    expect(parts, 'モデルから形が取れない').not.toBeNull();
+    let geometry: THREE.BufferGeometry | null = null;
+    parts!.group.traverse((o) => {
+      if (o instanceof THREE.Mesh) geometry = o.geometry;
+    });
+    expect(geometry).not.toBeNull();
+    const attr = geometry!.getAttribute('color');
+    const out: number[] = [];
+    for (let i = 0; i < attr.count; i++) out.push(attr.getX(i));
+    return out;
+  }
+
+  it('展開図を貼っても、目だけは暗いまま（顔が消えない）', () => {
+    // ==================================================================
+    // **絵を見て直した**（2026-09-19）。ふぐに展開図を貼ったら、
+    // 斑点は出たのに**目が体表の絵で塗られて顔が消えた**。
+    // 1歳半には「生き物」に見えない顔になる。
+    // `normalizeModelGeometry` が名前（Eye / Pupil / Iris）で印を付けて、
+    // `ModelFish` がその頂点だけ暗くする
+    // ==================================================================
+    const colors = colorsOf(fakeModel('Eye_L'), new THREE.Texture());
+    const dark = colors.filter((c) => c < 0.5);
+    const white = colors.filter((c) => c >= 0.99);
+    expect(dark.length, '目が暗くなっていない').toBeGreaterThan(0);
+    expect(white.length, '体まで暗くなっている').toBeGreaterThan(dark.length);
+    expect(Math.max(...dark), '目が明るすぎる').toBeLessThan(0.3);
+  });
+
+  it('目の名前を持たないモデルは、1画素も変わらない（くまのみ・えい）', () => {
+    // **モデルが1メッシュで目の名前を持たない**ので、印は付かない。
+    // ここが崩れると、すでに実機で見てもらった2匹の見た目が変わる
+    const colors = colorsOf(fakeModel(null), new THREE.Texture());
+    expect(Math.min(...colors), '展開図を貼るのに白でない頂点がある').toBe(1);
+  });
+
+  it('ふぐは、モデルと展開図の両方を指している', () => {
+    const fugu = findFish('fugu')!;
+    expect(fugu.modelUrl).toBe('/models/fugu.glb');
+    expect(fugu.skinUrl).toBe('/textures/skin_fugu.jpg');
+    // **向きは目で見て決める**（自動判定はしないと決めてある）。
+    // 頭が +X のモデルなので、正規化のあと反転が要る
+    expect(fugu.modelFlip, '反転を入れないと左を向いたまま右へ泳ぐ').toBe(true);
+  });
+
+  it('ふぐは、どこかのステージに出ている', () => {
+    // **`FISH` に居るだけでは画面に出ない。** 2026-09-19 まで ふぐ は
+    // どのステージにも入っておらず、**一度も画面に出ていなかった**
+    const used = new Set(STAGES.flatMap((s) => [...s.fish, s.rockFish ?? '']));
+    for (const fish of FISH) {
+      expect(used.has(fish.id), `${fish.id} がどのステージにも出ていない`).toBe(true);
+    }
   });
 });
