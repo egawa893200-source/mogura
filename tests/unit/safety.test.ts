@@ -30,6 +30,7 @@ import {
   HIDE_LIFT as ROCK_HIDE_LIFT,
   RockSystem,
 } from '../../src/poko/RockSystem';
+import { HitChain } from '../../src/poko/HitChain';
 import { HitEffect } from '../../src/poko/HitEffect';
 import { buildModelFish } from '../../src/poko/ModelFish';
 import { Spawner, seededRandom } from '../../src/poko/Spawner';
@@ -1482,6 +1483,36 @@ describe('サプライズ（§6-3）', () => {
     expect(frames, '一度も出なかった').toBeGreaterThan(60);
   });
 
+  it('声だけの 0.5秒に、来るぞの前触れが出る（2026-10-17）', () => {
+    // ==================================================================
+    // `calling` の 0.5秒 は**声だけで画面に何も無かった**。
+    // **暗い影は画面で判別できなかった**（撮って確かめた。水が濃紺なので
+    // 暗いものは背景に溶ける）ので、白に近い水色のゆらぎにしてある。
+    // 1歳半は「来るぞ」が分かるほうが喜ぶし、いきなり画面の 1/4 を覆うものが
+    // 出るのは §2 が禁じている突発的な動きに近い。
+    //
+    // **影は押せない**（当たり判定を持たない）。叩ける相手が増えも減りもしない
+    // ==================================================================
+    const fish = new SurpriseFish(rockFish(), null, null, seededRandom(11));
+    fish.forceNow();
+    runUntil(fish, (f) => f.state === 'calling');
+    expect(fish.state).toBe('calling');
+    // 声だけの時間が進むほど濃くなる
+    const early = fish.describe().herald;
+    for (let i = 0; i < 20; i++) fish.update(1 / 60, true);
+    const later = fish.describe().herald;
+    expect(later, '前触れが出ていない').toBeGreaterThan(0);
+    expect(later, '濃くなっていない').toBeGreaterThan(early);
+    expect(later, '濃すぎる（下の段が隠れて見える）').toBeLessThanOrEqual(0.55);
+    // **影が出ていても、まだ叩けない**（当たり判定は持たない）
+    fish.measure(project(412, 915));
+    expect(fish.isHittable()).toBe(false);
+
+    // 体が出きったら影は消える（二重に見えない）
+    runUntil(fish, (f) => f.state === 'out');
+    expect(fish.describe().herald, '出きっても前触れが残っている').toBe(0);
+  });
+
   it('叩いたら、その場で潰れが始まる（0フレーム原則・§4-3）', () => {
     const fish = new SurpriseFish(rockFish(), null, null, seededRandom(3));
     fish.forceNow();
@@ -1873,6 +1904,89 @@ describe('§6-1 毎回変わる小さなばらつき', () => {
     expect(fish.actors[0].group.rotation.z).toBeCloseTo(0, 6);
   });
 
+  it('ふぐは叩くと膨らんでから沈む（§6-2）', () => {
+    // ==================================================================
+    // **設計書に書いてあるのに実装が無かった**（2026-10-17 の監査で分かった。
+    // データのコメントだけが実装済みのように読める状態だった）。
+    //
+    // **潰れの 0.12秒には足さない。** 叩いた瞬間に2つのことを同時にやると
+    // どちらも読めない（「ばあ！」の「出かたの癖は出たあとに見せる」）
+    // ==================================================================
+    const fish = new FishSystem([findFish('fugu')!]);
+    fish.spawn(0, 0, 1, 'normal');
+    for (let i = 0; i < 60 * 5; i++) {
+      fish.update(1 / 60);
+      if (fish.actors[0].state === 'up') break;
+    }
+    expect(fish.hit(0)).toBe(true);
+
+    // 潰れている最中（0.12秒まで）は膨らまない
+    for (let i = 0; i < 7; i++) fish.update(1 / 60);
+    expect(fish.actors[0].group.scale.z, '潰れの最中に膨らんでいる').toBeLessThanOrEqual(1.02);
+
+    // そのあとの 0.33秒で膨らむ
+    let maxPuff = 0;
+    for (let i = 0; i < 60; i++) {
+      fish.update(1 / 60);
+      maxPuff = Math.max(maxPuff, fish.actors[0].group.scale.z);
+      if (fish.actors[0].state === 'hidden') break;
+    }
+    expect(maxPuff, '膨らんでいない').toBeGreaterThan(1.2);
+    expect(maxPuff, '膨らみすぎ（縁からはみ出す）').toBeLessThanOrEqual(1.3 + 1e-6);
+    // 引っ込んだら元に戻る
+    expect(fish.actors[0].state).toBe('hidden');
+    expect(fish.actors[0].group.scale.z).toBe(1);
+  });
+
+  it('膨らむのは ふぐ だけ（他の魚は癖を持たない）', () => {
+    // **データを読めば分かる形にしてある**（`FishConfig.puffOnHit`）。
+    // `id` で分岐すると、魚を足したときに入れ忘れる（「ばあ！」の17体の教訓）
+    for (const f of [...FISH, ...SPARE_FISH]) {
+      if (f.id === 'fugu') {
+        expect(f.puffOnHit, 'ふぐが膨らまない').toBe(true);
+        continue;
+      }
+      expect(f.puffOnHit ?? false, `${f.id} が膨らむ`).toBe(false);
+    }
+    const fish = new FishSystem([findFish('kingyo')!]);
+    fish.spawn(0, 0, 1, 'normal');
+    for (let i = 0; i < 60 * 5; i++) {
+      fish.update(1 / 60);
+      if (fish.actors[0].state === 'up') break;
+    }
+    fish.hit(0);
+    let maxScale = 0;
+    for (let i = 0; i < 60; i++) {
+      fish.update(1 / 60);
+      maxScale = Math.max(maxScale, fish.actors[0].group.scale.z);
+      if (fish.actors[0].state === 'hidden') break;
+    }
+    expect(maxScale, 'ふぐ以外が膨らんでいる').toBeLessThanOrEqual(1.0 + 1e-6);
+  });
+
+  it('膨らんでも、叩いてから沈みきるまでの時間は変わらない（§4-3）', () => {
+    // 見た目だけの癖。**時間を変えると §4-3 の表がずれる**
+    const puff = new FishSystem([findFish('fugu')!]);
+    const plain = new FishSystem([findFish('kingyo')!]);
+    for (const f of [puff, plain]) {
+      f.spawn(0, 0, 1, 'normal');
+      for (let i = 0; i < 60 * 5; i++) {
+        f.update(1 / 60);
+        if (f.actors[0].state === 'up') break;
+      }
+      f.hit(0);
+    }
+    let a = -1;
+    let b = -1;
+    for (let i = 0; i < 60 * 3; i++) {
+      puff.update(1 / 60);
+      plain.update(1 / 60);
+      if (a < 0 && puff.actors[0].state === 'hidden') a = i;
+      if (b < 0 && plain.actors[0].state === 'hidden') b = i;
+    }
+    expect(a).toBe(b);
+  });
+
   it('引っ込んだら、ばらつきも元に戻る', () => {
     // 魚は1種につき1匹しか持っていない。戻し忘れると次の登場に持ち越す
     const fish = new FishSystem(stageFish());
@@ -2038,6 +2152,60 @@ describe('人間が作ったモデルを入れる（2026-09-19 の ふぐ）', (
     const used = new Set(STAGES.flatMap((s) => [...s.fish, s.rockFish ?? '']));
     for (const fish of FISH) {
       expect(used.has(fish.id), `${fish.id} がどのステージにも出ていない`).toBe(true);
+    }
+  });
+});
+
+
+describe('続けて叩けると音が上がる（2026-10-17 の追加案）', () => {
+  it('当てるたびに半音ずつ上がり、3段で止まる', () => {
+    // **4段目は鳴らしても同じ音**（`AudioBus.playOneShot` が 1.25 で丸める。
+    // 1.059^4 = 1.26）。鳴らない段を作らないので 3段で止める
+    const chain = new HitChain();
+    const pitches = [0, 1, 2, 3, 4, 5].map((i) => chain.hit(i * 0.5));
+    expect(pitches[0]).toBeCloseTo(1, 3);
+    expect(pitches[1]).toBeGreaterThan(pitches[0]);
+    expect(pitches[2]).toBeGreaterThan(pitches[1]);
+    expect(pitches[3]).toBeGreaterThan(pitches[2]);
+    // 3段で頭打ち
+    expect(pitches[4]).toBeCloseTo(pitches[3], 6);
+    expect(pitches[5]).toBeCloseTo(pitches[3], 6);
+    // **丸められない範囲に収まっている**
+    expect(pitches[3]).toBeLessThanOrEqual(1.25);
+  });
+
+  it('外すと元に戻る。**元より低くはしない**（§4-5 外れを失敗にしない）', () => {
+    const chain = new HitChain();
+    // **1回目は上がらない**（段は「続いた回数」。2回目から上がる）
+    chain.hit(0);
+    expect(chain.describe().steps).toBe(0);
+    chain.hit(0.5);
+    expect(chain.describe().steps).toBe(1);
+    chain.miss();
+    expect(chain.describe().steps).toBe(0);
+    // 戻るだけ。1 より下はない
+    expect(chain.describe().pitch).toBe(1);
+    expect(chain.hit(1.0)).toBeCloseTo(1, 3);
+  });
+
+  it('間が空いたら切れる（ふつうに遊んでいるだけでは切れない）', () => {
+    // 魚の出る間隔（0.8〜2.0秒）＋ 出てくる 0.65秒 より長く取ってある
+    const chain = new HitChain();
+    chain.hit(0);
+    chain.hit(2.5);
+    expect(chain.describe().steps, '魚を待っているだけで切れた').toBe(1);
+    chain.hit(2.5 + 3.3);
+    expect(chain.describe().steps, '間が空いても切れない').toBe(0);
+  });
+
+  it('**時刻は更新時計で渡す**（壁時計を読まない。§11-4）', () => {
+    // `HitChain` は時計を自分で持たない（`Date.now()` を呼ばない）。
+    // 呼ぶ側が `loop.simulatedSeconds` を渡す作りであることを、
+    // 「同じ時刻を渡せば同じ結果」で確かめる
+    const a = new HitChain();
+    const b = new HitChain();
+    for (const t of [0, 0.4, 0.9, 1.5]) {
+      expect(a.hit(t)).toBe(b.hit(t));
     }
   });
 });

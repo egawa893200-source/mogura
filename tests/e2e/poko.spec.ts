@@ -49,20 +49,14 @@ declare global {
       getScore(): { stars: number; flowers: number };
       isChangingStage(): boolean;
       forceVariant(v: 'normal' | 'big' | 'gold' | null): void;
-      getSurprise(): {
-        state: string;
-        reveal: number;
-        x: number;
-        y: number;
-        rx: number;
-        ry: number;
-      } | null;
       getSurpriseTapCount(): number;
       forceSurprise(): void;
       isParentPanelOpen(): boolean;
       openParentPanel(): void;
       getAudio(): { muted: boolean; volume: number };
       getPlayedVoices(): { clip: string; at: number; synth: boolean }[];
+      getHitChain(): { steps: number; pitch: number };
+      getSurprise(): { state: string; reveal: number; x: number; y: number; rx: number; ry: number; herald: number } | null;
       getRockFish(): {
         id: string | null;
         state: string;
@@ -1187,5 +1181,75 @@ test.describe('声（§4-4）— 鳴るはずの回に、正しい声が鳴る',
     expect(tried, '「ばあっ」が1回も鳴っていない').toBeGreaterThan(2);
     // **鳴らそうとした回と、鳴った回がそろっていること**
     expect(played, `${tried}回 鳴らそうとして ${played}回しか鳴っていない`).toBe(tried);
+  });
+});
+
+test.describe('続けて叩けると音が上がる（2026-10-17）', () => {
+  test('2匹続けて当てると段が上がり、外すと戻る', async ({ page }) => {
+    // **画面を1画素も使わない報酬**（UI を足すと当たり判定を塞ぐ）。
+    // 音そのものは測れないので、**段と高さ**で見る
+    await boot(page);
+    expect(await page.evaluate(() => window.__poko.getHitChain())).toEqual({ steps: 0, pitch: 1 });
+
+    for (let i = 0; i < 2; i++) {
+      const hole = await page.evaluate(async () => {
+        const start = window.__poko.getSimulatedSeconds();
+        while (window.__poko.getSimulatedSeconds() - start < 30) {
+          const f = window.__poko.getFish().find((x) => x.state === 'up');
+          if (f) return window.__poko.getHoles()[f.holeIndex];
+          await new Promise((r) => requestAnimationFrame(() => r(null)));
+        }
+        return null;
+      });
+      expect(hole, '魚が出てこない').not.toBeNull();
+      await page.mouse.click(hole!.x, hole!.y);
+    }
+    const chained = await page.evaluate(() => window.__poko.getHitChain());
+    expect(chained.steps, '続けて当てても上がらない').toBeGreaterThan(0);
+    expect(chained.pitch).toBeGreaterThan(1);
+    // **丸められない範囲**（`AudioBus` は 1.25 で止める）
+    expect(chained.pitch).toBeLessThanOrEqual(1.25);
+
+    // 空の水たまりを叩く＝外す → 元に戻る（**元より低くはならない**）
+    const empty = await page.evaluate(() => {
+      const busy = new Set(
+        window.__poko.getFish().filter((f) => f.state !== 'hidden').map((f) => f.holeIndex)
+      );
+      return window.__poko.getHoles().find((_, i) => !busy.has(i)) ?? null;
+    });
+    expect(empty, '空の水たまりが無い').not.toBeNull();
+    await page.mouse.click(empty!.x, empty!.y);
+    await expect
+      .poll(() => page.evaluate(() => window.__poko.getHitChain().pitch))
+      .toBe(1);
+  });
+
+  test('サプライズの声だけの時間に、来るぞの前触れが出る（§6-3）', async ({ page }) => {
+    await boot(page);
+    // **最初の1匹が出るまで待つ。** 起動直後は誰も出ていない時間があり
+    // （`callSec` の 0.38秒）、それは仕様の範囲（4c のテストも同じ形で待つ）
+    await page.waitForFunction(() => window.__poko.getHittableCount() > 0);
+    await page.evaluate(() => window.__poko.forceSurprise());
+    const seen = await page.evaluate(async () => {
+      const start = window.__poko.getSimulatedSeconds();
+      let herald = 0;
+      let hittableWhileCalling = true;
+      while (window.__poko.getSimulatedSeconds() - start < 20) {
+        const s = window.__poko.getSurprise();
+        if (s?.state === 'calling') {
+          herald = Math.max(herald, s.herald);
+          // **前触れが出ていても、叩ける相手は居る**（不変条件4c）
+          if (window.__poko.getHittableCount() === 0) hittableWhileCalling = false;
+        }
+        if (s?.state === 'out') break;
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      const now = window.__poko.getSurprise();
+      return { herald, hittableWhileCalling, outHerald: now?.herald ?? -1 };
+    });
+    expect(seen.herald, '前触れが出ていない').toBeGreaterThan(0);
+    expect(seen.herald, '濃すぎる').toBeLessThanOrEqual(0.55);
+    expect(seen.hittableWhileCalling, '前触れの時間に叩ける相手が居ない').toBe(true);
+    expect(seen.outHerald, '出きっても前触れが残っている').toBe(0);
   });
 });

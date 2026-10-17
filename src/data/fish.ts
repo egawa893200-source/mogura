@@ -158,6 +158,8 @@ export const FISH: readonly FishConfig[] = [
     fins: 'small',
     pattern: 'spot',
     squashStyle: 'spin',
+    // **叩くと膨らんでから沈む**（§6-2）。ふぐだけの癖
+    puffOnHit: true,
     cutoutUrl: null,
     // ==================================================================
     // **人間が ChatGPT で作ったモデル**（2026-09-19）。

@@ -113,6 +113,16 @@ export interface FishJitter {
 /** ばらつき無し。**既定はこれ**（テストや呼び分けで指定しないとき） */
 export const NO_JITTER: FishJitter = { size: 1, pitch: 1, tilt: 0 };
 
+/**
+ * 膨らみ（§6-2 の ふぐ）。**潰れきってから**始める。
+ *
+ * `TIMING.hitSec` は 0.45秒 で、潰れ（`squash`）は 0.12秒 で最大になる。
+ * そこから沈みきるまでの 0.33秒 が膨らみの時間
+ */
+const PUFF_FROM = 0.12;
+/** 膨らむ量。**1.3倍まで** —— これ以上だと穴の縁からはみ出して見える */
+const PUFF_SCALE = 0.3;
+
 export class FishSystem {
   readonly group = new THREE.Group();
   readonly actors: FishActor[] = [];
@@ -540,7 +550,26 @@ export class FishSystem {
     const stretch = style === 'wide' ? 0.55 : style === 'spin' ? 0.2 : 0.3;
     const flatten = style === 'wide' ? 0.25 : style === 'spin' ? 0.35 : 0.55;
     const s = 1 - q * flatten;
-    actor.group.scale.set(big * jitter * (1 + q * stretch), big * jitter * s, big * jitter);
+    // ==================================================================
+    // **ふぐは叩くと膨らんでから沈む**（§6-2。2026-10-17 に入れた）。
+    //
+    // **潰れの 0.12秒には足さない。** 潰れきってから沈みきるまでの
+    // 0.33秒で膨らませる。叩いた瞬間に2つのことを同時にやると
+    // どちらも読めない（「ばあ！」の「出かたの癖は出たあとに見せる」と同じ）。
+    // **時間は1ミリ秒も変えない** —— `hitSec` 0.45秒 のままで、
+    // 得点も当たり判定も動かない（§4-3 の表を動かさないため）
+    // ==================================================================
+    let puff = 1;
+    if (actor.config.puffOnHit && actor.state === 'hit') {
+      const after = (actor.elapsed - PUFF_FROM) / Math.max(0.01, TIMING.hitSec - PUFF_FROM);
+      // 0 → 1 → 0。**膨らみきってから戻す**のではなく、沈みながらしぼむ
+      puff = 1 + PUFF_SCALE * Math.sin(Math.min(1, Math.max(0, after)) * Math.PI);
+    }
+    actor.group.scale.set(
+      big * jitter * puff * (1 + q * stretch),
+      big * jitter * puff * s,
+      big * jitter * puff
+    );
     // 出てくる角度（§6-1 ±8°）と、`spin` の回転。
     // **回すのは叩かれてからの進みで測る** —— `squash` は 0.12秒で 1 に
     // 張り付くので、そこで回すと途中で止まって見える

@@ -160,6 +160,15 @@ export interface FishConfig {
   fins: FishFins;
   pattern: FishPattern;
   squashStyle: SquashStyle;
+  /**
+   * 叩くと**膨らんでから沈む**（§6-2。`squashStyle` とは別の、種ごとの癖）。
+   *
+   * **潰れの 0.12秒には足さない。** そのあとの 0.33秒で見せる ——
+   * 「ばあ！」で「出かたの癖は出たあとに見せる」と学んだのと同じで、
+   * 叩いた瞬間に2つのことを同時にやると、どちらも読めない。
+   * いまは ふぐ だけ（2026-10-17 に実装。設計書にはもっと前から書いてあった）
+   */
+  puffOnHit?: boolean;
   /** 絵を置いたら使う。無ければ手続き生成（不変条件7） */
   cutoutUrl: string | null;
 

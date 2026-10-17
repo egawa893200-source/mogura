@@ -28,6 +28,7 @@ import { Ripple } from '../ui/Ripple';
 import { ParentPanel } from '../ui/ParentPanel';
 import { Score } from '../ui/Score';
 import type { StageId } from '../types';
+import { HitChain } from '../poko/HitChain';
 
 /** 叩いた場所。**毎フレーム new をしない**（§10-3） */
 const _hitAt = new THREE.Vector3();
@@ -102,6 +103,11 @@ export class App {
    * 出た（`Spawner` が使いきった）時点で null に戻す
    */
   private pendingVariant: FishVariant | null = null;
+  /**
+   * 続けて叩けたときの「音が上がる」（2026-10-17。`poko/HitChain.ts`）。
+   * **画面を1画素も使わない報酬** —— UI を足すと当たり判定を塞ぐ
+   */
+  private readonly chain = new HitChain();
 
   constructor(elements: AppElements) {
     this.renderer = new Renderer(elements.webglLayer);
@@ -333,7 +339,9 @@ export class App {
       else this.score.add();
       // **その魚の高さで鳴らす**（§6-1 ±5%）
       const pitch = actor?.pitch ?? 1;
-      this.audio.playOneShot('plop', pitch);
+      // **続けて当てるほど音が上がる**（2026-10-17。`HitChain`）。
+      // 上がるのは「ぽこ」だけ —— **声は上げない**（別人の声になる）
+      this.audio.playOneShot('plop', pitch * this.chain.hit(this.loop.simulatedSeconds));
       // **「いてっ」は当たった合図。** `speak()` を通さない（§4-4）
       this.say('ite', pitch);
       this.stageRoot?.spawner.reportHit(true);
@@ -342,6 +350,8 @@ export class App {
       // 低い音だけ。**声を出さない**（§4-5。外れを失敗にしないし、
       // 声は「出た」「当たった」の2つの意味に取っておく）
       this.audio.playOneShot('bubble');
+      // **続きが切れる。** ただし元に戻すだけで、元より低くはしない（§4-5）
+      this.chain.miss();
       this.stageRoot?.spawner.reportHit(false);
     }
     this.stageRoot?.spawner.applyAssist(root.fish);
@@ -373,10 +383,11 @@ export class App {
     root.effect.hammer(_hitAt);
     if (!scored) {
       this.audio.playOneShot('bubble');
+      this.chain.miss();
       return;
     }
     this.fishHitCount++;
-    this.audio.playOneShot('plop');
+    this.audio.playOneShot('plop', this.chain.hit(this.loop.simulatedSeconds));
     this.say('ite');
     // **★が5つ**（§6-3）。いちばん大きい見返り
     for (let i = 0; i < SURPRISE.stars; i++) this.score.add();
@@ -458,7 +469,7 @@ export class App {
       this.fishHitCount++;
       // 岩の魚も1匹は1匹。**水たまりと同じに数える**（§4-6）
       this.score.add();
-      this.audio.playOneShot('plop');
+      this.audio.playOneShot('plop', this.chain.hit(this.loop.simulatedSeconds));
       // **「いてっ」は当たった合図**（§4-4。`speak()` を通さない）
       this.say('ite');
       // しぶきとハンマーは**魚が出ている手前**に出す
@@ -646,6 +657,8 @@ export class App {
        * 「鳴るはずの回に鳴ったか」が分からない（2026-10-17 の監査）
        */
       getPlayedVoices: () => this.audio.getPlayedVoices(),
+      /** 続けて叩けている段数と、いまの音の高さ（2026-10-17） */
+      getHitChain: () => this.chain.describe(),
       /** 音の設定（Phase 7。おとなの画面から変える） */
       getAudio: () => ({ muted: this.audio.isMuted(), volume: this.audio.getVolume() }),
       /** 保護者用パネルが開いているか（E2E 用） */

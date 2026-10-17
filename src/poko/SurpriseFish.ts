@@ -35,6 +35,46 @@ export type SurpriseState = 'hidden' | 'calling' | 'rising' | 'out' | 'hit' | 'r
 /** 当たり判定の半径の下限（px）。出はじめの数フレームを押せるようにするため */
 const MIN_HIT_PX = 40;
 
+/**
+ * 予告のゆらぎ（§6-3）。**薄く・低く・短く。**
+ *
+ * **暗い影にしたら、画面で判別できなかった**（2026-10-17、撮って確かめた。
+ * 濃さ 0.336 でも水の色に沈む）。水が濃紺なので、**暗いものは暗い背景に
+ * 溶ける** —— 下から来る何かを知らせるには、**明るいほう**しかない。
+ * 白に近い水色で、水がかき回されたように見せる。
+ *
+ * **濃くしない** —— 下の段の水たまりに重なるので、濃いと「隠れた」に見える。
+ * **光らせない**（加算にしない。§2 の明滅の禁止に近づく）
+ */
+const HERALD_ALPHA = 0.5;
+const HERALD_Y = -3.72;
+const HERALD_COLOR = 0xcdeef7;
+
+/**
+ * 影の絵（中心が濃く、縁がぼける円）。
+ *
+ * **`document` が無い環境では null**（単体テスト。不変条件7 と同じ扱いで、
+ * そのときは縁のはっきりした円になるが、描画しないので問題にならない）
+ */
+function createHeraldTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(205, 238, 247, 0.95)');
+  g.addColorStop(0.5, 'rgba(205, 238, 247, 0.45)');
+  g.addColorStop(1, 'rgba(205, 238, 247, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
 /** 度 → ラジアン */
 function rad(deg: number): number {
   return (deg * Math.PI) / 180;
@@ -70,6 +110,27 @@ export class SurpriseFish {
   private rx = 0;
   private ry = 0;
 
+  /**
+   * 来るぞ、の前触れ（2026-10-17 に足した）。
+   *
+   * ==========================================================================
+   * **`calling` の 0.5秒 は、声だけで画面に何も無かった。**
+   * 1歳半は「来るぞ」が分かるほうが喜ぶし、**いきなり画面の 1/4 を覆うものが
+   * 出る**のは、§2 が禁じている突発的な動きに近い。
+   *
+   * これは**押せない**（当たり判定を持たない）。`calling` のあいだは
+   * サプライズ自身もまだ叩けないが、水たまりの魚は止めていない（抽選を
+   * 止めはじめるのは `rising` から）ので、叩ける相手は居る（不変条件4c）。
+   *
+   * **薄くする。** 下の段の水たまりに重なるので、濃いと「隠れた」に見える
+   * （押せることは変わらないが、見えなくなるのは別の話）。
+   * ==========================================================================
+   */
+  private readonly herald: THREE.Mesh | null = null;
+  private readonly heraldMaterial: THREE.MeshBasicMaterial | null = null;
+  /** **1つでも漏らすとリークする**（不変条件8） */
+  private readonly disposables: { dispose(): void }[] = [];
+
   constructor(
     config: FishConfig | null,
     model: THREE.Object3D | null,
@@ -98,6 +159,24 @@ export class SurpriseFish {
         this.fish.group.rotation.set(0, SURPRISE.yaw, 0);
       }
       this.group.add(this.fish.group);
+
+      // 予告のゆらぎ。**円を1枚**（手続き生成なので素材は要らない。不変条件7）
+      const art = createHeraldTexture();
+      this.heraldMaterial = new THREE.MeshBasicMaterial({
+        ...(art ? { map: art } : { color: HERALD_COLOR }),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const geometry = new THREE.PlaneGeometry(1, 1);
+      this.herald = new THREE.Mesh(geometry, this.heraldMaterial);
+      this.herald.name = 'surprise.herald';
+      this.herald.visible = false;
+      this.herald.renderOrder = -1;
+      this.group.add(this.herald);
+      this.disposables.push(geometry, this.heraldMaterial);
+      if (art) this.disposables.push(art);
       this.fish.group.updateWorldMatrix(true, true);
       _box.makeEmpty();
       expandVisible(_box, this.fish.group);
@@ -276,6 +355,7 @@ export class SurpriseFish {
       }
     }
     this.place();
+    this.placeHerald();
   }
 
   private retire(): void {
@@ -286,6 +366,31 @@ export class SurpriseFish {
     this.elapsed = 0;
     this.wait = this.nextWait();
     if (this.fish) this.fish.group.visible = false;
+  }
+
+  /** 予告のゆらぎを置く。**`calling` で濃く、出てくるにつれて消える** */
+  private placeHerald(): void {
+    const herald = this.herald;
+    const material = this.heraldMaterial;
+    if (!herald || !material) return;
+    let t = 0;
+    if (this.state === 'calling') {
+      // 0.5秒かけて濃くなる（**突発音と同じで、突発的な見た目も作らない**）
+      t = Math.min(1, this.elapsed / Math.max(0.01, SURPRISE.callSec));
+    } else if (this.state === 'rising') {
+      // 体が出てくるぶんだけ薄くする（ゆらぎと体が二重に見えないように）
+      t = Math.max(0, 1 - this.reveal * 1.6);
+    }
+    if (t <= 0) {
+      herald.visible = false;
+      return;
+    }
+    herald.visible = true;
+    material.opacity = HERALD_ALPHA * t;
+    // 近づくにつれて大きくなる（下から上がってくるものの影）
+    const w = SURPRISE.maxWidth * (0.55 + 0.45 * t);
+    herald.scale.set(w, w * 0.42, 1);
+    herald.position.set(SURPRISE.x, HERALD_Y, SURPRISE.z - 0.02);
   }
 
   private place(): void {
@@ -332,6 +437,7 @@ export class SurpriseFish {
     y: number;
     rx: number;
     ry: number;
+    herald: number;
   } {
     return {
       state: this.state,
@@ -340,11 +446,14 @@ export class SurpriseFish {
       y: +this.sy.toFixed(1),
       rx: +this.rx.toFixed(1),
       ry: +this.ry.toFixed(1),
+      // 予告のゆらぎの濃さ（0〜1。E2E と単体テスト用）
+      herald: this.herald?.visible ? +(this.heraldMaterial?.opacity ?? 0).toFixed(3) : 0,
     };
   }
 
   dispose(): void {
     this.fish?.dispose();
+    for (const item of this.disposables) item.dispose();
   }
 }
 
