@@ -76,8 +76,17 @@ export class App {
   private readonly voiceLog: { clip: string; at: number }[] = [];
   /** 「ばあっ！」をまだ鳴らしていない魚。0.12秒ずらして鳴らす（§4-4） */
   private readonly pendingBaa: { actor: number; at: number; pitch: number }[] = [];
-  /** 前に声を鳴らした更新時刻。**声どうしを 0.12秒 空ける**ために見る */
+  /** 前に声を鳴らした更新時刻。**声どうしを空ける**ために見る */
   private lastVoiceAt = -1;
+  /**
+   * 前に鳴らした声の長さ（＋ひと息）。次の声はこれだけ空ける。
+   *
+   * **「いてっ」も数える**（2026-10-17、E2E が捕まえた）。
+   * ここを「ばあっ」だけで更新していたので、子どもが叩いた直後
+   * （「いてっ」が 0.42秒 鳴っているあいだ）に魚が出ると、
+   * その「ばあっ」が `AudioBus` に黙って捨てられていた
+   */
+  private lastVoiceGap = 0;
   /** どの魚が `calling` に入ったかを覚えておく（入った瞬間だけ鳴らす） */
   private readonly wasCalling: boolean[] = [];
   /** 岩の魚が `calling` に入った瞬間を拾うため（§4-8） */
@@ -326,8 +335,7 @@ export class App {
       const pitch = actor?.pitch ?? 1;
       this.audio.playOneShot('plop', pitch);
       // **「いてっ」は当たった合図。** `speak()` を通さない（§4-4）
-      this.audio.playVoice('ite', pitch);
-      this.voiceLog.push({ clip: 'ite', at: this.loop.simulatedSeconds });
+      this.say('ite', pitch);
       this.stageRoot?.spawner.reportHit(true);
     } else {
       this.missCount++;
@@ -369,8 +377,7 @@ export class App {
     }
     this.fishHitCount++;
     this.audio.playOneShot('plop');
-    this.audio.playVoice('ite');
-    this.voiceLog.push({ clip: 'ite', at: this.loop.simulatedSeconds });
+    this.say('ite');
     // **★が5つ**（§6-3）。いちばん大きい見返り
     for (let i = 0; i < SURPRISE.stars; i++) this.score.add();
   }
@@ -453,8 +460,7 @@ export class App {
       this.score.add();
       this.audio.playOneShot('plop');
       // **「いてっ」は当たった合図**（§4-4。`speak()` を通さない）
-      this.audio.playVoice('ite');
-      this.voiceLog.push({ clip: 'ite', at: this.loop.simulatedSeconds });
+      this.say('ite');
       // しぶきとハンマーは**魚が出ている手前**に出す
       root.effect.splash(_hitAt, true, root.rng);
       root.effect.hammer(_hitAt);
@@ -483,7 +489,12 @@ export class App {
    * いちばん紛らわしい間違いだった。
    *
    * **同時に出た2匹を同じフレームで鳴らさない。** `voiceBusyUntil` に
-   * 任せると2匹目が無音になるので、0.12秒ずらす（間があると「2匹出た」と分かる）。
+   * 任せると2匹目が無音になるので、ずらして並べる（間があると「2匹出た」と分かる）。
+   *
+   * **ずらす幅は声の長さで決める**（2026-10-17、監査で見つかった）。
+   * 0.12秒 固定にしていたが、「ばあっ」は **0.750秒** ある。
+   * 0.12 < 0.75 なので **並べた2本目は必ず `AudioBus` に捨てられていた** ——
+   * 「間があると2匹出たと分かる」という狙いが一度も成立していなかった。
    * ========================================================================
    */
   private speakOnRise(): void {
@@ -491,11 +502,14 @@ export class App {
     if (!root) return;
     const now = this.loop.simulatedSeconds;
 
+    // 声の長さ ＋ ひと息。読めていなければ録音と同じ 0.75秒 を見込む
+    const gap = Math.max(0.12, (this.audio.voiceLength('baa') || 0.75) + 0.06);
+
     for (let i = 0; i < root.fish.actors.length; i++) {
       const calling = root.fish.actors[i].state === 'calling';
       if (calling && !this.wasCalling[i]) {
         // すでに待っている声があれば、そのぶん後ろへずらす
-        const delay = this.pendingBaa.length * 0.12;
+        const delay = this.pendingBaa.length * gap;
         // **その魚の高さで鳴らす**（§6-1 ±5%）。1匹ずつ声が違うと、
         // 同じ音の繰り返しに聞こえない
         this.pendingBaa.push({
@@ -512,13 +526,13 @@ export class App {
     // サプライズも同じ列に並べる（§6-3。声が重ならないように）
     const surpriseCalling = root.surprise.state === 'calling';
     if (surpriseCalling && !this.wasSurpriseCalling) {
-      this.pendingBaa.push({ actor: -2, at: now + this.pendingBaa.length * 0.12, pitch: 1 });
+      this.pendingBaa.push({ actor: -2, at: now + this.pendingBaa.length * gap, pitch: 1 });
     }
     this.wasSurpriseCalling = surpriseCalling;
 
     const rockCalling = root.rocks.state === 'calling';
     if (rockCalling && !this.wasRockCalling) {
-      this.pendingBaa.push({ actor: -1, at: now + this.pendingBaa.length * 0.12, pitch: 1 });
+      this.pendingBaa.push({ actor: -1, at: now + this.pendingBaa.length * gap, pitch: 1 });
     }
     this.wasRockCalling = rockCalling;
 
@@ -532,12 +546,44 @@ export class App {
     // 並べ方ではなく「前の声からの間隔」で見る。
     // ==================================================================
     while (this.pendingBaa.length > 0 && this.pendingBaa[0].at <= now) {
-      if (now - this.lastVoiceAt < 0.12) break;
+      if (now - this.lastVoiceAt < this.lastVoiceGap) break;
       const next = this.pendingBaa.shift();
-      this.lastVoiceAt = now;
-      this.audio.playVoice('baa', next?.pitch ?? 1);
-      this.voiceLog.push({ clip: 'baa', at: now });
+      if (!next) break;
+      // ==================================================================
+      // **出きってしまった魚の声は鳴らさない**（2026-10-17）。
+      //
+      // 間隔を 0.12秒 から 0.81秒（声の長さ ＋ ひと息）に広げたので、
+      // 待っているあいだに その魚が出終わっていることがある。
+      // そこで鳴らすと「隠れたままなのに『ばあっ』」の逆 ——
+      // **とっくに見えているのに『ばあっ』**になって、どの合図か分からない。
+      //
+      // **`rising` のうちは鳴らす。** 2匹目は出ている最中に声が届く形になるが、
+      // 「声が先・姿があと」を守れるのは1匹目だけで、
+      // 2匹目は「出ながら鳴る」のほうが「無音」よりはるかに良い（§4-4）
+      // ==================================================================
+      const still =
+        next.actor >= 0
+          ? ((st) => st === 'calling' || st === 'rising')(root.fish.actors[next.actor]?.state)
+          : next.actor === -1
+            ? root.rocks.state === 'calling' || root.rocks.state === 'popping'
+            : root.surprise.state === 'calling' || root.surprise.state === 'rising';
+      if (!still) continue;
+      this.say('baa', next.pitch);
     }
+  }
+
+  /**
+   * 声を1本鳴らす。**声はすべてここを通す。**
+   *
+   * 通さないと「前の声からどれだけ空いたか」が片方の声でしか更新されず、
+   * もう片方が `AudioBus` の重なり判定に落ちる（2026-10-17 に踏んだ）。
+   */
+  private say(clip: 'baa' | 'ite', pitch = 1): void {
+    const now = this.loop.simulatedSeconds;
+    this.lastVoiceAt = now;
+    this.lastVoiceGap = (this.audio.voiceLength(clip) || (clip === 'baa' ? 0.75 : 0.42)) + 0.06;
+    this.audio.playVoice(clip, pitch);
+    this.voiceLog.push({ clip, at: now });
   }
 
   /** E2E と実機確認のためのデバッグ API。**本番ビルドでも公開する** */
@@ -594,6 +640,12 @@ export class App {
       forceSurprise: () => this.stageRoot?.surprise.forceNow(),
       /** 得点（§4-6）。**数字は画面に出さない**ので、確認はここから */
       getScore: () => this.score.describe(),
+      /**
+       * **実際に鳴った声**（E2E 用）。`synth` は録音が間に合わず代役で鳴らした回。
+       * `getVoiceLog()` は「鳴らそうとした」記録なので、両方を見ないと
+       * 「鳴るはずの回に鳴ったか」が分からない（2026-10-17 の監査）
+       */
+      getPlayedVoices: () => this.audio.getPlayedVoices(),
       /** 音の設定（Phase 7。おとなの画面から変える） */
       getAudio: () => ({ muted: this.audio.isMuted(), volume: this.audio.getVolume() }),
       /** 保護者用パネルが開いているか（E2E 用） */

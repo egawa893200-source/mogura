@@ -36,7 +36,7 @@ import { Spawner, seededRandom } from '../../src/poko/Spawner';
 import { prefersReducedMotion } from '../../src/core/Motion';
 import { SurpriseFish } from '../../src/poko/SurpriseFish';
 import { STARS_PER_FLOWER } from '../../src/ui/Score';
-import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
+import { FISH_Z, HOLE_Z, MOUTH_X, OUTER_RX, OUTER_RY, OUT_X, RIM_Z } from '../../src/poko/WaterShape';
 
 /**
  * 端末4種。**当たり判定の円が重ならないことを見る**ときに使う。
@@ -48,14 +48,29 @@ import { FISH_Z, HOLE_Z, MOUTH_X, OUT_X, RIM_Z } from '../../src/poko/WaterShape
  * カメラは「ばあ！」と同じ `(0, 0.3, 7.2)` 固定・fov 66°。
  */
 const DEVICES: [string, number, number][] = [
-  ['Pixel 7', 412, 839],
-  ['iPhone 12', 390, 750],
-  ['小さい端末', 360, 600],
+  // ==================================================================
+  // **実機の CSS ビューポートを書くこと**（2026-10-17、監査で見つけて直した）。
+  //
+  // それまでの表は `Pixel 7 = 412×839` / `iPhone 12 = 390×750` で、
+  // **どちらも実機の値ではなかった**（実機は 412×915 と 390×844）。
+  // 縦横比にすると 0.491 / 0.520 で、**表に載っている2つだけが
+  // 水たまりの縁が切れない側**だった。実機の 0.450 / 0.462 では
+  // 左の列の縁が 2.6〜8.2px はみ出していて、誰も気づけなかった。
+  // ==================================================================
+  ['Pixel 7', 412, 915],
+  ['iPhone 12', 390, 844],
+  ['小さい端末', 360, 780],
   ['横持ち', 844, 390],
 ];
 
+/** 縁を測るための使い回し（**毎回 new をしない**は src 側の話だが、揃えておく） */
+const _edge = new THREE.Vector3();
+
 function project(width: number, height: number) {
-  const camera = new THREE.PerspectiveCamera(66, width / height, 0.1, 100);
+  // **画角は `Renderer` と同じにする**（2026-10-17）。
+  // 縦画面だけ 66°、横画面は 55°（`core/Renderer.ts:128`）。
+  // ここを 66° 固定にしていたので、横持ちの実測だけ本物より狭く出ていた
+  const camera = new THREE.PerspectiveCamera(width / height < 1 ? 66 : 55, width / height, 0.1, 100);
   camera.position.set(0, 0.3, 7.2);
   camera.lookAt(0, 0, 0);
   camera.updateMatrixWorld(true);
@@ -98,6 +113,43 @@ describe('ステージと魚のデータ（§5-1 / §5-3）', () => {
       }
     }
   });
+
+  // ==================================================================
+  // **縦持ちだけで見る。** 横持ち（844×390）は下の段の縁が画面の下へ
+  // **26px** はみ出す（実測 416.4 > 390）。これは当たり半径 51.4px と
+  // 同じ「横持ちは人間の判断待ち」の一件で、下の
+  // 「小さい端末と横持ちの実測を固定する」が記録している。
+  // **ここで一緒に落とすと、その判断待ちが見えなくなる**ので分けてある
+  // ==================================================================
+  for (const [name, width, height] of DEVICES.filter(([, w, h]) => w < h)) {
+    it(`${name} ${width}×${height} で、水たまりの縁が画面の中に入っている`, () => {
+      // ==================================================================
+      // **芯ではなく縁で見る**（2026-10-17）。e2e は芯しか見ていなかったので、
+      // 縁が画面の外に出ていても緑だった。
+      // 「ばあ！」の「置いたのに見えないときは、まず画面に入っているかを疑う」
+      // と同じ話で、こちらは**見えてはいるが欠けている**形
+      // ==================================================================
+      const p = project(width, height);
+      const out = { x: 0, y: 0 };
+      for (const stage of STAGES) {
+        for (const hole of stage.holes) {
+          for (const [dx, dy] of [
+            [-OUTER_RX, 0],
+            [OUTER_RX, 0],
+            [0, OUTER_RY],
+            [0, -OUTER_RY],
+          ]) {
+            _edge.set(hole.position[0] + dx, hole.position[1] + dy, HOLE_Z);
+            expect(p.project(_edge, out)).toBe(true);
+            expect(out.x, `${stage.id}/${hole.id} の縁が左右にはみ出す`).toBeGreaterThanOrEqual(0);
+            expect(out.x, `${stage.id}/${hole.id} の縁が左右にはみ出す`).toBeLessThanOrEqual(width);
+            expect(out.y, `${stage.id}/${hole.id} の縁が上下にはみ出す`).toBeGreaterThanOrEqual(0);
+            expect(out.y, `${stage.id}/${hole.id} の縁が上下にはみ出す`).toBeLessThanOrEqual(height);
+          }
+        }
+      }
+    });
+  }
 
   it('同じステージに、同じモデルの魚を2匹置かない', () => {
     // ==================================================================
@@ -277,19 +329,20 @@ describe('当たり判定（§3-3）', () => {
     // 丘に重なって「浮いて」見える。§3-2 がこの設計の出発点）、
     // 縦の間隔はこれ以上広げられない。
     //
-    // 実測:
+    // 実測（2026-10-17 に測り直した。**端末の表を実機の値に直し**、
+    // 画角も `Renderer` と同じ「縦 66°・横 55°」にそろえたため動いた）:
     // | 端末 | 半径 | 70px |
     // |---|---|---|
-    // | Pixel 7 412×839 | 89.1px | ○ |
-    // | iPhone 12 390×750 | 79.5px | ○ |
-    // | 360×600 | **63.4px** | × |
-    // | 844×390（横持ち）| **40.9px** | × |
+    // | Pixel 7 412×915 | 97.5px | ○ |
+    // | iPhone 12 390×844 | 89.8px | ○ |
+    // | 360×780 | **82.9px** | ○ |
+    // | 844×390（横持ち）| **51.4px** | × |
     //
-    // 上の行を地平線まで上げれば 360×600 でも 71.3px になるが、
-    // **「ばあ！」が最後まで直せなかった欠点を取り戻すことになる**ので採らない。
+    // **縦持ちは3種とも 70px を超えた。** それまで 63.4px と記録していた
+    // 「小さい端末」は 360×**600** で測っていて、いまのスマホに無い縦横比だった。
     //
-    // 選べるのは (a) このまま（実機2種は 79px 以上ある）
-    // (b) 6箇所を減らす (c) 上の行を上げ直す —— で、
+    // **横持ちだけが残る。** 選べるのは (a) このまま（縦持ちで遊ぶ前提）
+    // (b) 横持ちのとき箇所を減らす (c) 横持ちの画角を広げる —— で、
     // **どれを採るかは人間が決めること。** 決まるまでは
     // 「円が重ならない」だけを守る（上の it が見ている）。
     // ==================================================================
@@ -300,10 +353,11 @@ describe('当たり判定（§3-3）', () => {
       measured[name] = Math.min(...holes.describe().map((s) => s.radiusPx));
     }
     // **配置を触ったらここも動く。** 動いたら上の表を測り直すこと
-    expect(measured['小さい端末']).toBeGreaterThan(60);
-    expect(measured['小さい端末']).toBeLessThan(70);
-    expect(measured['横持ち']).toBeGreaterThan(35);
-    expect(measured['横持ち']).toBeLessThan(50);
+    expect(measured['小さい端末']).toBeGreaterThan(80);
+    expect(measured['小さい端末']).toBeLessThan(90);
+    // **横持ちはまだ 70px に届かない**（人間の判断待ち）。実測を固定しておく
+    expect(measured['横持ち']).toBeGreaterThan(45);
+    expect(measured['横持ち']).toBeLessThan(60);
   });
 
   it('魚が出きっているときの当たり半径（いちばん狭くなる瞬間）', () => {
@@ -595,20 +649,36 @@ describe('出現の抽選（§4-2 / §4-7）', () => {
     expect(used.size).toBe(6);
   });
 
-  it('介助は 3.2〜5.2秒の外に出ない（§4-7）', () => {
+  it('介助は 5.0〜9.0秒の外に出ない（§4-7）', () => {
+    // ==================================================================
+    // **設計書の数値を直に書く**（2026-10-17、監査で見つけて直した）。
+    //
+    // ここは `ASSIST.maxUpSec` / `ASSIST.minUpSec` と比べていたので、
+    // **定数をどんな値にしても必ず通る恒真式**だった。
+    // 名乗っている合格ライン（当時 3.2〜5.2）を一度も検査しておらず、
+    // 2026-09-16 に定数を 5.0〜9.0 へ動かしたコミットを**無改変で通した**。
+    // いまは設計書 §2・§4-7 の数値（5.0〜9.0）をそのまま書いてある。
+    // **動かすのは人間の判断。動かしたら設計書とここの両方を直すこと。**
+    // ==================================================================
     const { fish, spawner } = makeBoth();
     // 外し続けても上限で止まる
     for (let i = 0; i < 50; i++) {
       spawner.reportHit(false);
       spawner.applyAssist(fish);
     }
-    expect(fish.getUpSec()).toBeLessThanOrEqual(ASSIST.maxUpSec);
+    expect(fish.getUpSec()).toBeLessThanOrEqual(9.0);
+    expect(fish.getUpSec(), '上限まで伸びていない').toBeGreaterThan(8.0);
     // 当て続けても下限で止まる
     for (let i = 0; i < 50; i++) {
       spawner.reportHit(true);
       spawner.applyAssist(fish);
     }
-    expect(fish.getUpSec()).toBeGreaterThanOrEqual(ASSIST.minUpSec);
+    expect(fish.getUpSec()).toBeGreaterThanOrEqual(5.0);
+    expect(fish.getUpSec(), '下限まで縮んでいない').toBeLessThan(6.0);
+    // 定数と設計書が食い違っていないこと（片方だけ動かすのを防ぐ）
+    expect(ASSIST.minUpSec, '設計書 §4-7 は 5.0').toBe(5.0);
+    expect(ASSIST.maxUpSec, '設計書 §4-7 は 9.0').toBe(9.0);
+    expect(TIMING.upSec, '設計書 §4-1 は 6.0').toBe(6.0);
   });
 
   it('同じ種からは必ず同じ列が出る（乱数は独立したシードから引く）', () => {
@@ -1483,6 +1553,35 @@ describe('サプライズ（§6-3）', () => {
     expect(d.ry).toBeGreaterThan(40);
   });
 
+  it('覆う場所に出ている魚を、覆う前に引っ込める', () => {
+    // ==================================================================
+    // **止めていたのは「これから出る魚」だけだった**（2026-10-17、監査）。
+    // サプライズが始まる前から下の段に出ている魚は泳ぎ続け、
+    // 横に**見えている**のに、押すとサプライズが反応していた
+    // （「押した相手と違うものが反応する」）
+    // ==================================================================
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    fish.spawn(0, 4, 1, 'normal');
+    fish.spawn(1, 1, 1, 'normal');
+    for (let i = 0; i < 60 * 3; i++) fish.update(1 / 60);
+    expect(fish.actors[0].state).toBe('up');
+    expect(fish.actors[1].state).toBe('up');
+
+    // 覆われるのは 4番の水たまりだけ
+    expect(fish.retreatInHoles([4])).toBe(1);
+    expect(fish.actors[0].state, '覆われる場所の魚が残っている').toBe('retreating');
+    expect(fish.actors[1].state, '覆われない場所の魚まで沈めた').toBe('up');
+
+    // **叩ける相手は残る**（不変条件4c）。サプライズ自身も的として数えられる
+    expect(fish.countRisingOrUp()).toBeGreaterThan(0);
+  });
+
+  it('引っ込めるのは、出ている魚だけ（隠れている魚は動かさない）', () => {
+    const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
+    expect(fish.retreatInHoles([0, 1, 2, 3, 4, 5])).toBe(0);
+    expect(fish.actors.every((a) => a.state === 'hidden')).toBe(true);
+  });
+
   it('サプライズが出ているあいだ、水たまりに新しい魚を出さない', () => {
     // 覆われて見えない魚が下の段に出るのを防ぐ（`Spawner.setHeld()`）
     const fish = new FishSystem(STAGES[0].fish.map((id) => findFish(id)!));
@@ -1676,6 +1775,32 @@ describe('§6-1 毎回変わる小さなばらつき', () => {
     expect(actor.state).toBe('up');
     expect(actor.group.scale.x).toBeCloseTo(1.1, 3);
     expect(((actor.group.rotation.z * 180) / Math.PI)).toBeCloseTo(8, 3);
+  });
+
+  it('隠れているあいだは、大きいさかなの倍率も効かない（§6-2）', () => {
+    // ==================================================================
+    // **§6-1 のばらつきだけ `reveal` を掛けていた**（2026-10-17、監査）。
+    // §6-2 の 1.75倍は `calling`（姿を出さない 0.38秒）から効いていて、
+    // 隠れている体が切り取り面を越える魚がいた
+    // （実測: 手続き生成の えい で +0.014、はぎ は余裕 0.030 しか無い）。
+    // **同じ規則を両方に掛ける。**
+    // ==================================================================
+    const fish = new FishSystem(stageFish());
+    fish.spawn(0, 0, 1, 'big');
+    const actor = fish.actors[0];
+    fish.update(1 / 60);
+    expect(actor.state).toBe('calling');
+    expect(actor.reveal).toBe(0);
+    expect(actor.group.scale.x, '隠れているのに大きい').toBeCloseTo(1, 6);
+    expect(actor.group.scale.y).toBeCloseTo(1, 6);
+
+    // 出きったら、ちゃんと大きい
+    for (let i = 0; i < 60 * 5; i++) {
+      fish.update(1 / 60);
+      if (actor.state === 'up') break;
+    }
+    expect(actor.state).toBe('up');
+    expect(actor.group.scale.x, '出きっても大きくなっていない').toBeGreaterThan(1.2);
   });
 
   it('ばらつきは、状態の切り替わる時刻を変えない（§4-3 の表を動かさない）', () => {
@@ -1884,6 +2009,27 @@ describe('人間が作ったモデルを入れる（2026-09-19 の ふぐ）', (
     // **向きは目で見て決める**（自動判定はしないと決めてある）。
     // 頭が +X のモデルなので、正規化のあと反転が要る
     expect(fugu.modelFlip, '反転を入れないと左を向いたまま右へ泳ぐ').toBe(true);
+  });
+
+  it('予備の魚が、出ている魚とモデルも展開図も共有しない', () => {
+    // ==================================================================
+    // **2026-09-19 に ふぐ の `modelUrl`/`skinUrl` を、注釈ごと
+    // ちょうちょうお（予備）へ貼り付けていた**（2026-10-17 の監査で発覚）。
+    // `modelUrl` がある魚は `tail` / `fins` / `pattern` / `bodyHeight` を
+    // 読まないので、**輪郭も模様も ふぐ そのもの**になる。
+    // 予備は「実機で刺さらなかったときに入れ替える」ためのものなので、
+    // 入れ替えた瞬間に「同じ魚を2色に塗った」が起きる。
+    // **テストが `FISH` しか見ていなかった**のが、見逃した理由
+    // ==================================================================
+    const used = new Set(FISH.map((f) => f.modelUrl).filter((u): u is string => !!u));
+    const skins = new Set(FISH.map((f) => f.skinUrl).filter((u): u is string => !!u));
+    for (const spare of SPARE_FISH) {
+      expect(used.has(spare.modelUrl ?? ''), `${spare.id} が本番の魚とモデルを共有`).toBe(false);
+      expect(skins.has(spare.skinUrl ?? ''), `${spare.id} が本番の魚と展開図を共有`).toBe(false);
+    }
+    // 予備どうしも共有しない
+    const spareModels = SPARE_FISH.map((f) => f.modelUrl).filter((u): u is string => !!u);
+    expect(new Set(spareModels).size).toBe(spareModels.length);
   });
 
   it('ふぐは、どこかのステージに出ている', () => {

@@ -138,6 +138,9 @@ export class AssetLoader {
   private readonly textureLoader = new THREE.TextureLoader();
   private readonly cache = new Map<string, AnyTexture>();
   private readonly pending = new Map<string, Promise<AnyTexture>>();
+  /** 読み込んだモデル。**ステージの入れ替えで読み直さない**（下の `loadModel`） */
+  private readonly models = new Map<string, THREE.Object3D>();
+  private readonly modelLoads = new Map<string, Promise<THREE.Object3D | null>>();
   private disposed = false;
 
   /**
@@ -213,15 +216,40 @@ export class AssetLoader {
    */
   async loadModel(url: string | null): Promise<THREE.Object3D | null> {
     if (!url) return null;
-    try {
-      const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
-      const loader = new GLTFLoader();
-      const gltf = await loader.loadAsync(resolveAssetUrl(url));
-      return gltf.scene;
-    } catch {
-      warnMissingAsset('モデル', url);
-      return null;
-    }
+    // ==================================================================
+    // **読み直さない**（2026-10-17、監査で見つけた）。
+    //
+    // ステージは★10個ごとに替わり、実測で**十数秒に1回**。そのたびに
+    // `.glb` を 700KB 読み直して、正規化もやり直していた
+    // （テクスチャは最初からキャッシュしてあるのに、モデルだけ素通し）。
+    // 読み込みが遅れたぶん**水たまりが空のまま**になる（不変条件4c）。
+    //
+    // **`scene` をそのまま配ってよい。** 受け取る側
+    // （`normalizeModelGeometry`）は `geometry.clone()` してから触るので
+    // 元を汚さない。捨てるのもここの仕事ではない（共有しているので
+    // `ProceduralFish.dispose` は触らない、と `StageRoot` 側に書いてある）
+    // ==================================================================
+    const cached = this.models.get(url);
+    if (cached) return cached;
+    const inFlight = this.modelLoads.get(url);
+    if (inFlight) return inFlight;
+
+    const task = (async (): Promise<THREE.Object3D | null> => {
+      try {
+        const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+        const loader = new GLTFLoader();
+        const gltf = await loader.loadAsync(resolveAssetUrl(url));
+        this.models.set(url, gltf.scene);
+        return gltf.scene;
+      } catch {
+        warnMissingAsset('モデル', url);
+        return null;
+      } finally {
+        this.modelLoads.delete(url);
+      }
+    })();
+    this.modelLoads.set(url, task);
+    return task;
   }
   /**
    * 背景のループ動画を読む。無ければ null（手続き生成の背景に落ちる。不変条件7）。

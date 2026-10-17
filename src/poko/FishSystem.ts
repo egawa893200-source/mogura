@@ -430,6 +430,38 @@ export class FishSystem {
     return true;
   }
 
+  /**
+   * この水たまりに出ている魚を、先に沈ませる（§6-3 サプライズ用）。
+   *
+   * ==========================================================================
+   * **サプライズは「これから出る魚」しか止めていなかった**（2026-10-17、監査）。
+   *
+   * `Spawner.setHeld()` が止めるのは抽選だけなので、**始まる前から下の段に
+   * 出ている魚**はそのまま泳ぎ続ける。その魚は大きい魚の横に**見えている**のに、
+   * タップはサプライズが先に食う（`App.onTap` の順番）ので、
+   * **押した相手と違うものが反応する**。
+   * 覆われる場所の魚は、覆われる前に引っ込めるのが筋。
+   *
+   * **叩ける相手は減らない** —— 呼ぶのはサプライズが叩けるようになった
+   * 瞬間（`rising`）だけで、そのサプライズ自身が的として数えられる（不変条件4c）。
+   * ==========================================================================
+   */
+  retreatInHoles(holeIndices: readonly number[]): number {
+    let moved = 0;
+    for (const actor of this.actors) {
+      // **`calling` も含める**（2026-10-17、E2E が捕まえた）。
+      // 声だけ鳴って姿がまだ無い魚を残すと、**サプライズが出きるころに
+      // 覆われた場所から出てくる**（実機では「居るのに押せない魚」になる）。
+      // `reveal` 0 から沈むので、見た目には何も起きない
+      if (actor.state !== 'up' && actor.state !== 'rising' && actor.state !== 'calling') continue;
+      if (!holeIndices.includes(actor.holeIndex)) continue;
+      actor.state = 'retreating';
+      actor.elapsed = 0;
+      moved++;
+    }
+    return moved;
+  }
+
   private retire(actor: FishActor): void {
     // **色と大きさを必ず戻す。** 魚は1種につき1匹しか持っていないので、
     // 戻し忘れると次に出たときも金のまま・大きいままになる
@@ -472,10 +504,17 @@ export class FishSystem {
     // 当たり判定も変えない（当てやすさは同じで、見た目だけ特別）。
     // **高さに上限を掛ける** —— 倍率だけだと、元から大きいエイが暴れる
     const baseHeight = shape?.height ?? 0;
-    const big =
+    const bigFull =
       actor.variant === 'big'
         ? Math.min(SPECIAL.bigScale, baseHeight > 0 ? SPECIAL.bigMaxHeight / baseHeight : SPECIAL.bigScale)
         : 1;
+    // **大きいさかなの倍率も `reveal` を掛ける**（2026-10-17、監査で見つけた）。
+    // §6-1 のばらつきだけ掛けていて、§6-2 の 1.75倍は
+    // **姿を出さない `calling` の 0.38秒から効いていた**。
+    // 隠れている体は切り取り面の左にあるが、横に 1.75倍すると
+    // 鼻先が面を越える魚がいる（実測: 手続き生成の えい で +0.014、
+    // はぎ は余裕 0.030 しか無い）。出るにつれて効かせれば構造的に起きない
+    const big = 1 + (bigFull - 1) * actor.reveal;
     // ==================================================================
     // §6-1 のばらつき。**`reveal` を掛けて効かせる。**
     //

@@ -62,6 +62,7 @@ declare global {
       isParentPanelOpen(): boolean;
       openParentPanel(): void;
       getAudio(): { muted: boolean; volume: number };
+      getPlayedVoices(): { clip: string; at: number; synth: boolean }[];
       getRockFish(): {
         id: string | null;
         state: string;
@@ -740,9 +741,18 @@ test.describe('骨組み（Phase 1）', () => {
   });
 
   test('素材が1つも無くても起動して、どこを押しても反応が返る（不変条件7）', async ({ page }) => {
-    // **`public/` を空にしたのと同じ状況**を作る。背景が 404 でも
-    // 手続き生成のグラデーションに落ち、例外は表に出ない
-    await page.route('**/backgrounds/**', (route) => route.abort());
+    // ==================================================================
+    // **`public/` を空にしたのと同じ状況**を作る。
+    //
+    // 2026-10-17 の監査まで、ここは `/backgrounds/**` しか遮っていなかった。
+    // ところが2ステージとも `backgroundUrl: null` ＋ 動画なので、
+    // **その要求は一度も発生しない** —— つまり何も遮らず、
+    // 素材が全部読める状態を測っていた（落ちる条件が無いテスト）。
+    // 実際に使う素材は動画・モデル・展開図なので、まとめて遮る
+    // ==================================================================
+    await page.route('**/{backgrounds,videos,models,textures,posters}/**', (route) =>
+      route.abort()
+    );
     await boot(page);
     const size = page.viewportSize()!;
     const before = await page.evaluate(() => window.__poko.getTapCount());
@@ -806,6 +816,51 @@ test.describe('サプライズ（§6-3）— 画面の下から大きく1匹', (
       window.__poko.getFish().filter((f) => f.state !== 'hidden').length
     );
     expect(after, '覆われた下の段に魚が出た').toBeLessThanOrEqual(before);
+  });
+
+  test('出はじめから沈みきるまで、叩ける相手が1つも途切れない（不変条件4c）', async ({
+    page,
+  }) => {
+    // **`calling` の 0.5秒 で窓ができていた**（2026-10-17、監査）。
+    // 抽選を止めるのに、サプライズ自身はまだ叩けない時間があった
+    await boot(page);
+    await page.waitForFunction(() => window.__poko.getHittableCount() > 0);
+    await page.evaluate(() => window.__poko.forceSurprise());
+    const bad = await page.evaluate(async () => {
+      let zero = 0;
+      let seen = false;
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 20) {
+        const s = window.__poko.getSurprise();
+        if (s && s.state !== 'hidden') seen = true;
+        if (seen && s && s.state === 'hidden') break;
+        if (window.__poko.getHittableCount() === 0) zero++;
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return zero;
+    });
+    expect(bad, `叩ける相手が 0 のフレームが ${bad} 回あった`).toBe(0);
+  });
+
+  test('出きったとき、楕円の内側の水たまりに魚が出ていない', async ({ page }) => {
+    // 覆う場所の魚は、覆う前に引っ込める（`FishSystem.retreatInHoles`）
+    await boot(page);
+    const s = await popSurprise(page);
+    const left = await page.evaluate((e) => {
+      const holes = window.__poko.getHoles();
+      return window.__poko
+        .getFish()
+        .filter((f) => f.state === 'up' || f.state === 'rising')
+        .filter((f) => {
+          const h = holes[f.holeIndex];
+          if (!h) return false;
+          const dx = (h.x - e.x) / e.rx;
+          const dy = (h.y - e.y) / e.ry;
+          return dx * dx + dy * dy <= 1;
+        })
+        .map((f) => f.id);
+    }, s);
+    expect(left, `楕円の中に ${left.join(',')} が出たまま`).toEqual([]);
   });
 
   test('どちらのステージでも、体が画面の中に収まる', async ({ page }) => {
@@ -1037,5 +1092,100 @@ test.describe('Phase 7 の仕上げ（おと / さいしょから）', () => {
     await page.waitForFunction(() => window.__poko.getHittableCount() > 0, null, {
       timeout: 60_000,
     });
+  });
+});
+
+test.describe('声（§4-4）— 鳴るはずの回に、正しい声が鳴る', () => {
+  // ==================================================================
+  // **`getVoiceLog()` では見えない**（あれは「鳴らそうとした」記録）。
+  // `AudioBus` が重なりで黙って捨てた回も成功として残るので、
+  // **鳴らした側の記録**（`getPlayedVoices`）で見る。2026-10-17 の監査で
+  // 「いちばん最初の『いてっ』が『ばあっ』の合成音で鳴る」が見つかった
+  // ==================================================================
+
+  test('いちばん最初の一撃が、代役の声で鳴らない', async ({ page }) => {
+    await boot(page);
+    // 最初のタップで音が解禁され、そこから声が読まれる（不変条件9）
+    await page.mouse.click(10, 300);
+    const hole = await page.evaluate(async () => {
+      const start = window.__poko.getSimulatedSeconds();
+      while (window.__poko.getSimulatedSeconds() - start < 30) {
+        const f = window.__poko.getFish().find((x) => x.state === 'up');
+        if (f) return window.__poko.getHoles()[f.holeIndex];
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return null;
+    });
+    expect(hole, '魚が出てこない').not.toBeNull();
+    await page.mouse.click(hole!.x, hole!.y);
+    await expect
+      .poll(() => page.evaluate(() => window.__poko.getPlayedVoices().filter((v) => v.clip === 'ite').length))
+      .toBeGreaterThan(0);
+    const ite = await page.evaluate(() =>
+      window.__poko.getPlayedVoices().filter((v) => v.clip === 'ite')
+    );
+    // **代役（合成音）で鳴っていないこと。** 代役は「ばあっ」の形だった
+    expect(ite.every((v) => !v.synth), '最初の「いてっ」が代役で鳴っている').toBe(true);
+  });
+
+  test('「ばあっ」の直後に叩いても「いてっ」が鳴る（割り込み）', async ({ page }) => {
+    // **0.750秒のクリップに対して 0.12秒 しかずらしていなかった**ので、
+    // 「ばあっ」の直後に叩くと子どもの一撃の声だけが捨てられていた
+    await boot(page);
+    await page.mouse.click(10, 300);
+    const res = await page.evaluate(async () => {
+      const start = window.__poko.getSimulatedSeconds();
+      // 「ばあっ」が鳴った直後（0.3秒以内）に出ている魚を探す
+      while (window.__poko.getSimulatedSeconds() - start < 40) {
+        const baa = window.__poko.getVoiceLog().filter((v) => v.clip === 'baa');
+        const last = baa[baa.length - 1];
+        const now = window.__poko.getSimulatedSeconds();
+        if (last && now - last.at < 0.3) {
+          const f = window.__poko.getFish().find((x) => x.state === 'up');
+          if (f) return { hole: window.__poko.getHoles()[f.holeIndex], ok: true };
+        }
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+      }
+      return { hole: null, ok: false };
+    });
+    expect(res.ok, '「ばあっ」の直後に出ている魚が見つからない').toBe(true);
+    const before = await page.evaluate(
+      () => window.__poko.getPlayedVoices().filter((v) => v.clip === 'ite').length
+    );
+    await page.mouse.click(res.hole!.x, res.hole!.y);
+    await expect
+      .poll(() =>
+        page.evaluate(() => window.__poko.getPlayedVoices().filter((v) => v.clip === 'ite').length)
+      )
+      .toBe(before + 1);
+  });
+
+  test('並べた2本目の「ばあっ」も、黙って捨てられない', async ({ page }) => {
+    // 並べる間隔（声の長さ ＋ ひと息）より短い間隔で鳴っていないこと＝
+    // 捨てられずに鳴っていること
+    await boot(page);
+    await page.mouse.click(10, 300);
+    // ==================================================================
+    // **音が生きてから数える。** `unlock()` は非同期（AudioContext の
+    // resume と復号）なので、起動直後の1本は `playVoice` が
+    // 「まだ鳴らせない」で返る。それは重なりで捨てたのとは別の話
+    // ==================================================================
+    await page.waitForFunction(() => window.__poko.getPlayedVoices().length > 0, null, {
+      timeout: 60_000,
+    });
+    const from = await page.evaluate(() => ({
+      played: window.__poko.getPlayedVoices().filter((v) => v.clip === 'baa').length,
+      tried: window.__poko.getVoiceLog().filter((v) => v.clip === 'baa').length,
+    }));
+    await waitSimulated(page, 25);
+    const to = await page.evaluate(() => ({
+      played: window.__poko.getPlayedVoices().filter((v) => v.clip === 'baa').length,
+      tried: window.__poko.getVoiceLog().filter((v) => v.clip === 'baa').length,
+    }));
+    const tried = to.tried - from.tried;
+    const played = to.played - from.played;
+    expect(tried, '「ばあっ」が1回も鳴っていない').toBeGreaterThan(2);
+    // **鳴らそうとした回と、鳴った回がそろっていること**
+    expect(played, `${tried}回 鳴らそうとして ${played}回しか鳴っていない`).toBe(tried);
   });
 });

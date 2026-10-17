@@ -107,12 +107,29 @@ const ROCKS = [
   { id: 'iwa-r', position: [1.2, 2.55] as const, scale: 1.15, hitRadiusPx: 120 },
 ];
 
+/*
+ * **左の列は −1.70**（2026-10-17。監査で見つけて動かした）。
+ *
+ * −1.82 だと、**いまのスマホの縦横比で水たまりの縁が画面の外に出る**:
+ *
+ * | 端末 | 縦横比 | 左の縁 |
+ * |---|---|---|
+ * | 412×915（Pixel 7 実機） | 0.450 | **−8.2px** |
+ * | 390×844（iPhone 12〜14） | 0.462 | **−2.6px** |
+ * | 412×839（それまでのテストの表） | 0.491 | +9.6px |
+ *
+ * **テストの端末表が実機と違っていた**（412×839 / 390×750 はどちらも
+ * 実機の値ではない）ので、表に載っている2つだけが切れない側だった。
+ * −1.70 にすると、いちばん狭い 0.450 でも +3.6px 残る。
+ * **当たり判定は1px も狭くならない**（半径を決めているのは上下の間隔
+ * 2.08 のほうで、実測 97.5 / 89.8 / 82.9px は動かなかった）。
+ */
 const HOLES = [
-  { id: 'r1-l', position: [-1.82, 0.4] as const, hitRadiusPx: 120 },
+  { id: 'r1-l', position: [-1.70, 0.4] as const, hitRadiusPx: 120 },
   { id: 'r1-r', position: [0.43, 0.4] as const, hitRadiusPx: 120 },
-  { id: 'r2-l', position: [-1.82, -1.68] as const, hitRadiusPx: 120 },
+  { id: 'r2-l', position: [-1.70, -1.68] as const, hitRadiusPx: 120 },
   { id: 'r2-r', position: [0.43, -1.68] as const, hitRadiusPx: 120 },
-  { id: 'r3-l', position: [-1.82, -3.76] as const, hitRadiusPx: 120 },
+  { id: 'r3-l', position: [-1.70, -3.76] as const, hitRadiusPx: 120 },
   { id: 'r3-r', position: [0.43, -3.76] as const, hitRadiusPx: 120 },
 ];
 

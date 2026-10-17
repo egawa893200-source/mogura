@@ -164,6 +164,17 @@ export class AudioBus {
 
   /** クリップを鳴らし終える AudioContext 時刻。重ねて再生しないため */
   private voiceBusyUntil = 0;
+  /** いま鳴っている声。**割り込む（止める）ために持つ** */
+  private voiceSource: AudioBufferSourceNode | null = null;
+  /**
+   * **実際に鳴った声**の記録（開発と E2E 用。最大 64件）。
+   *
+   * `App.voiceLog` は「鳴らそうとした」記録で、
+   * `playVoiceClip` が重なりで**黙って捨てた回も成功として残る**。
+   * それでは「鳴るはずの回に鳴ったか」を誰も見ていないことになるので、
+   * ここで**鳴らした側**の記録を取る（監査で指摘された穴）
+   */
+  private readonly played: { clip: VoiceClip; at: number; synth: boolean }[] = [];
   /** 読み上げの慣らしが済んだか（済んでいない端末では合成音で代役を立てる） */
   private speechPrimed = false;
   /**
@@ -238,8 +249,22 @@ export class AudioBus {
    * という食い違いが起こりうるため。取得に失敗する経路そのものを無くす。
    */
   private async loadVoiceClip(): Promise<void> {
-    // 起動時に要るのは2本だけ。餌ごとの「〇〇うまあ」は選ばれてから読む
-    this.voiceState = (await this.ensureVoice('baa')) ? 'ok' : 'ng';
+    // ==================================================================
+    // **2本とも先に読む**（2026-10-17、監査で見つかった）。
+    //
+    // `baa` だけ読んでいたので、**いちばん最初に叩いた1回**は `ite` の
+    // 読み込みが間に合わず、代役（合成音）に落ちていた。
+    // その代役が `peekVoice()`＝「ばあっ！」の音だったので、
+    // **「叩けた」の合図として「魚が出た」の音が鳴っていた**（§4-4 が
+    // 「この2つを取り違えないこと」と名指ししている事故）。
+    // 付録B は「叩いたあと2回目を叩かなければ失敗」と書いていて、
+    // その1回目がこれだった。
+    //
+    // どちらも数十KB で、`unlock()`（最初のタップ）のあとに読むので
+    // 起動は遅くならない。
+    // ==================================================================
+    const [baa] = await Promise.all([this.ensureVoice('baa'), this.ensureVoice('ite')]);
+    this.voiceState = baa ? 'ok' : 'ng';
   }
 
   /**
@@ -322,13 +347,25 @@ export class AudioBus {
    * 本物の声には聞こえないが、口の動きとしては伝わる。
    */
   /** 読み込んだ声を鳴らす。鳴らせたら true。 */
-  private playVoiceClip(name: VoiceClip, rate = 1): boolean {
+  private playVoiceClip(name: VoiceClip, rate = 1, interrupt = false): boolean {
     const ctx = this.ctx;
     const buffer = this.voiceBuffers[name];
     if (!ctx || !this.master || !buffer) return false;
-    // まだ前の声が鳴っている最中なら重ねない。
-    // 重なると言葉として聞き取れなくなる（§2 突発音を作らない）
-    if (ctx.currentTime < this.voiceBusyUntil) return true;
+    // ==================================================================
+    // まだ前の声が鳴っている最中は重ねない。
+    // 重なると言葉として聞き取れなくなる（§2 突発音を作らない）。
+    //
+    // **ただし「いてっ」は割り込む**（2026-10-17、監査で見つかった）。
+    // 「ばあっ」は 0.750秒・「いてっ」は 0.420秒あるのに、重なりの判定は
+    // クリップ全長で効く。だから**「ばあっ」の直後 0.75秒に叩くと、
+    // 子どもの一撃の声だけが黙って捨てられていた**。
+    // 勝手に出てきた魚の合図が、子どもが自分でやったことの合図に
+    // 勝っていたことになる。**役割の順位は「いてっ」が上。**
+    // ==================================================================
+    if (ctx.currentTime < this.voiceBusyUntil) {
+      if (!interrupt) return true;
+      this.stopVoice();
+    }
     try {
       const src = ctx.createBufferSource();
       src.buffer = buffer;
@@ -346,6 +383,12 @@ export class AudioBus {
       src.start(t0);
       const until = t0 + buffer.duration;
       this.voiceBusyUntil = until;
+      this.voiceSource = src;
+      src.onended = () => {
+        if (this.voiceSource === src) this.voiceSource = null;
+      };
+      this.played.push({ clip: name, at: t0, synth: false });
+      if (this.played.length > 64) this.played.shift();
 
       // 喋っているあいだだけ環境音を下げる。
       // 環境音は 320Hz のローパスなので言葉と帯域はあまり重ならないが、
@@ -552,9 +595,33 @@ export class AudioBus {
    */
   playVoice(clip: VoiceClip = 'baa', rate = 1): void {
     if (this.muted || this.disabled || !this.unlocked) return;
-    if (this.playVoiceClip(clip, rate)) return;
+    // **「いてっ」だけは前の声に割り込む**（叩いた合図が落ちないように）
+    if (this.playVoiceClip(clip, rate, clip === 'ite')) return;
     void this.ensureVoice(clip);
     this.fallbackVoice(clip);
+  }
+
+  /** 鳴っている声を止める（割り込み用） */
+  private stopVoice(): void {
+    const src = this.voiceSource;
+    this.voiceSource = null;
+    if (!src) return;
+    try {
+      src.onended = null;
+      src.stop();
+    } catch {
+      // すでに止まっていることがある。**例外を表に出さない**（§2）
+    }
+  }
+
+  /** 声の長さ（秒）。読めていなければ 0。**並べる間隔を決めるのに使う** */
+  voiceLength(clip: VoiceClip): number {
+    return this.voiceBuffers[clip]?.duration ?? 0;
+  }
+
+  /** **実際に鳴った**声（開発と E2E 用）。`synth` は代役で鳴らした回 */
+  getPlayedVoices(): { clip: VoiceClip; at: number; synth: boolean }[] {
+    return this.played.map((v) => ({ ...v }));
   }
 
   speak(text: string, clip: VoiceClip = 'baa'): void {
@@ -617,8 +684,30 @@ export class AudioBus {
    * 声の種類が増えたら、ここで種類ごとに違う形に分ける
    * （みずのなかは「ばあ」と「ばくん」で母音とフォルマントを変えていた）。
    */
-  private fallbackVoice(_clip: VoiceClip): void {
+  private fallbackVoice(clip: VoiceClip): void {
+    // **声の種類ごとに違う形にする**（2026-10-17）。
+    // ここで分けずに `peekVoice()` だけを鳴らしていたので、
+    // 「いてっ」の代役に「ばあっ」の音が出ていた。
+    // **代役どうしも、役割が混ざってはいけない**（§4-4）
+    this.played.push({ clip, at: this.ctx?.currentTime ?? 0, synth: true });
+    if (clip === 'ite') {
+      this.hitVoice();
+      return;
+    }
     this.peekVoice();
+  }
+
+  /**
+   * 読み上げも録音も使えないときの「いてっ」。WebAudio で作る。
+   *
+   * **「ばあっ」と取り違えないこと**が唯一の要件なので、逆の形にする:
+   * 「ばあっ」は**長く（0.30秒）・開いた母音（フォルマント 900）**で上がる音。
+   * こちらは**短く（0.16秒）・こもった母音（620）**で、ぶつかった感じにする。
+   */
+  private hitVoice(): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.master) return;
+    this.syllable(ctx.currentTime, 330, 620, 0.16);
   }
 
   /**

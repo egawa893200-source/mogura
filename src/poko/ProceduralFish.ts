@@ -124,9 +124,19 @@ export function createProceduralFish(
         for (const material of built.materials) {
           const m = material as THREE.MeshStandardMaterial;
           if (on) {
-            // **体の絵と頂点カラーを外す。** 残すと掛け算になって金にならない
+            // ==============================================================
+            // **体の絵を外す。** 残すと掛け算になって金にならない。
+            //
+            // **頂点カラーは、展開図を貼る魚だけ残す**（2026-10-17、監査）。
+            //  - 展開図あり（はぎ・くまのみ・ふぐ）… 頂点カラーは白で、
+            //    **目だけ暗く**してある（`ModelFish` の `eyeMask`）。
+            //    外すと、きんいろのあいだだけ**顔が無い魚**になる。
+            //    白 × 金なので、金色はそのまま出る
+            //  - 展開図なし（きんぎょ・えい）… `tintModelGeometry` が
+            //    体色を焼き込んでいるので、**残すと金に体色が掛かって濁る**
+            // ==============================================================
             m.map = null;
-            m.vertexColors = false;
+            m.vertexColors = skin !== null;
             m.color.set(SPECIAL.goldColor);
             // 弱い自発光で、暗い水の中でも金に見せる。
             // **強くしない** —— 強いと輪郭が飛んで「光る塊」になる

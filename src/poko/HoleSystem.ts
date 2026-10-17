@@ -174,6 +174,23 @@ export class HoleSystem {
   }
 
   /** 開発と E2E 用。**毎フレーム呼ばないこと**（配列と object を作る） */
+  /**
+   * 画面上の楕円の中に芯がある水たまりを `out` に詰める（§6-3）。
+   *
+   * **配列を作らない**（§10-3。毎フレーム呼ばれる）。
+   * `describe()` は毎回オブジェクトを6個作るので、ここでは使えない。
+   */
+  insideEllipse(cx: number, cy: number, rx: number, ry: number, out: number[]): number[] {
+    out.length = 0;
+    if (rx <= 0 || ry <= 0) return out;
+    for (let i = 0; i < this.runtimes.length; i++) {
+      const dx = (this.sx[i] - cx) / rx;
+      const dy = (this.sy[i] - cy) / ry;
+      if (dx * dx + dy * dy <= 1) out.push(i);
+    }
+    return out;
+  }
+
   describe(): { id: string; x: number; y: number; radiusPx: number }[] {
     return this.runtimes.map((runtime, i) => ({
       id: runtime.config.id,

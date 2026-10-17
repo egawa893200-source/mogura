@@ -34,6 +34,7 @@
  */
 
 import * as THREE from 'three';
+import { prefersReducedMotion } from '../core/Motion';
 
 import { ROCK_TIMING } from '../data/timing';
 import type { FishConfig, RockConfig, StageConfig } from '../types';
@@ -187,6 +188,11 @@ export class RockSystem {
   private readonly sy: number[] = [];
   private readonly onScreen: boolean[] = [];
   private readonly disposables: { dispose(): void }[] = [];
+
+  /** 動きを弱めるか（不変条件6）。**`Ripple` / `HitEffect` と同じ指定を見る** */
+
+  private readonly reduced = prefersReducedMotion();
+
 
   constructor(
     stage: StageConfig,
@@ -457,9 +463,15 @@ export class RockSystem {
     for (const runtime of this.runtimes) {
       if (runtime.shake > 0) {
         runtime.shake = Math.max(0, runtime.shake - dt);
-        // **横に揺らす。** 上下だと岩が跳ねて見える
+        // **横に揺らす。** 上下だと岩が跳ねて見える。
+        // **「動きを減らして」の指定では弱める**（不変条件6。2026-10-17、監査で
+        // 見つけた —— `Ripple` と `HitEffect` は弱めていたのに、岩だけ素通し
+        // だった。「設定したのに半分しか効かない」のを Phase 7 で直した形が、
+        // 岩には適用されていなかった）。**0 にはしない** ——
+        // 揺れは「空振りでも反応が返った」の合図（不変条件1・3b）
         const t = runtime.shake / ROCK_TIMING.shakeSec;
-        runtime.group.rotation.z = Math.sin(t * Math.PI * 6) * 0.05 * t;
+        const swing = this.reduced ? 0.02 : 0.05;
+        runtime.group.rotation.z = Math.sin(t * Math.PI * 6) * swing * t;
       } else if (runtime.group.rotation.z !== 0) {
         runtime.group.rotation.z = 0;
       }
